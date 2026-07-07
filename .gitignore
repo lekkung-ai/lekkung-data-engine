@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+
+# Data and Logs
+data/history/
+data/news/
+data/logs/
+data/results/
+!data/results/convert_to_json.py
+data/manual_input/
+!data/manual_input/warrants_master.csv
+
+# IDEs
+.vscode/
+.idea/
+.claude/
