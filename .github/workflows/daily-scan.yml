@@ -42,7 +42,7 @@ jobs:
       - name: Copy JSON to stockdesk
         run: |
           mkdir -p stockdesk_repo/data/scans
-          cp -r output/*.json stockdesk_repo/data/scans/
+          cp -r data/results/output/*.json stockdesk_repo/data/scans/
 
       - name: Commit and Push to stockdesk
         run: |
