@@ -1,0 +1,54 @@
+name: Daily Stock Data Engine
+
+on:
+  schedule:
+    - cron: '11 0 * * 1-5' # 18:00 ICT (UTC+7) Mon-Fri
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout data_engine repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache history data
+        uses: actions/cache@v3
+        with:
+          path: data/history
+          key: history-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            history-${{ runner.os }}-
+
+      - name: Run Master Pipeline (all)
+        run: python run_all.py all
+
+      - name: Checkout stockdesk repository
+        uses: actions/checkout@v4
+        with:
+          repository: lekkung-ai/lekkung-stockdesk
+          token: ${{ secrets.DASHBOARD_PAT }}
+          path: stockdesk_repo
+
+      - name: Copy JSON to stockdesk
+        run: |
+          mkdir -p stockdesk_repo/data/scans
+          cp -r output/*.json stockdesk_repo/data/scans/
+
+      - name: Commit and Push to stockdesk
+        run: |
+          cd stockdesk_repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/scans/*.json
+          git commit -m "Automated data update from Data Engine" || echo "No changes to commit"
+          git push
