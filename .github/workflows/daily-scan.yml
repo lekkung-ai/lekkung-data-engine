@@ -2,7 +2,7 @@ name: Daily Stock Data Engine
 
 on:
   schedule:
-    - cron: '11 0 * * 1-5' # 18:00 ICT (UTC+7) Mon-Fri
+    - cron: '11 11 * * 1-5' # 18:11 ICT (UTC+7) Mon-Fri
   workflow_dispatch: # Allows manual trigger
 
 jobs:
