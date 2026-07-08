@@ -48,12 +48,37 @@ jobs:
         run: |
           mkdir -p stockdesk_repo/data/scans
           cp -r data/results/output/*.json stockdesk_repo/data/scans/
+          
+      - name: Post-process StockDesk data
+        run: |
+          DATESTAMP=$(TZ='Asia/Bangkok' date +%Y-%m-%d)
+          echo "Processing for date: $DATESTAMP"
+          
+          # 1. Save historical snapshot
+          mkdir -p stockdesk_repo/data/history/$DATESTAMP
+          cp -r data/results/output/*.json stockdesk_repo/data/history/$DATESTAMP/
+          
+          cd stockdesk_repo
+          # Update index.json
+          python -c "import json,os,sys; f=sys.argv[1]; d=sys.argv[2]; idx=json.load(open(f)) if os.path.exists(f) else []; idx=sorted(set(idx+[d])); json.dump(idx,open(f,'w'))" "data/history/index.json" "$DATESTAMP"
+          
+          # 2. Save Big Lot
+          python scripts/save_biglot.py "$DATESTAMP" || echo "save_biglot failed"
+          
+          # 3. Save News
+          python scripts/save_news.py || echo "save_news failed"
+          
+          # 4. Save SEC 59-2 / 246
+          python -X utf8 scripts/save_sec_reports.py || echo "save_sec_reports failed"
+          
+          # 5. Compute scan days
+          python -X utf8 scripts/compute_scan_days.py || echo "compute_scan_days failed"
 
       - name: Commit and Push to stockdesk
         run: |
           cd stockdesk_repo
           git config user.name "Data Engine Bot"
           git config user.email "dataengine@lekkung.ai"
-          git add data/scans/*.json
+          git add -A
           git commit -m "Automated data update from Data Engine" || echo "No changes to commit"
           git push
