@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: '11 11 * * 1-5' # 18:11 ICT (UTC+7) Mon-Fri
   workflow_dispatch: # Allows manual trigger
+  push:
+    branches:
+      - main
 
 jobs:
   run-pipeline:
@@ -19,7 +22,9 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
 
       - name: Cache history data
         uses: actions/cache@v3
