@@ -4,6 +4,7 @@ import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -24,12 +25,19 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import (CHUNK_SIZE, DAILY_FILE, FUND_WORKERS, HISTORY_DIR,
                     SYMBOLS_FILE)
 
+# 📦 Growth Cache — เก็บค่า Revenue_Growth_YoY / NetProfit_Growth_QoQY ที่เคยดึงสำเร็จ
+# ข้ามรอบรัน เพื่อเติมให้ตัวที่ดึงพลาดในรอบนี้ (Yahoo .financials/.quarterly_financials
+# คืนค่าว่างแบบสุ่ม ~40% ต่อ request โดยไม่มี error ให้ retry จับได้ในรอบเดียว)
+GROWTH_CACHE_FILE = HISTORY_DIR.parent / "cache" / "growth_cache.csv"
+GROWTH_CACHE_MAX_AGE_DAYS = 100  # ~1 ไตรมาส เกินนี้ถือว่าหมดอายุ ไม่เอามาเติม
+
 
 def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
     """ฟังก์ชันย่อยสำหรับดึงงบการเงินแบบรวดเร็ว"""
     try:
         # --- 💡 ส่วนคำนวณ QoQY ---
         qoqy_growth = None
+        qoqy_ref_period = None
         yf_t = f"{ticker}.BK"
         stock = yf.Ticker(yf_t)
 
@@ -48,9 +56,11 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
         # 4. ดึงค่าล่าสุดมาใช้งาน
         if not qoqy_series.empty:
             qoqy_growth = qoqy_series.iloc[-1]
+            qoqy_ref_period = qoqy_series.index[-1]
 
         # --- 💡 ส่วนคำนวณ Annual Revenue Growth & Annual Net Income Growth ---
         ann_rev_growth = None
+        ann_rev_ref_period = None
         ann_profit_growth = None
         f = stock.financials
         if not f.empty:
@@ -58,7 +68,8 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
                 rev = f.loc["Total Revenue"].sort_index(ascending=False)
                 ann_rev_series = (rev.iloc[0] - rev.iloc[1]) / abs(rev.iloc[1])
                 ann_rev_growth = ann_rev_series
-                
+                ann_rev_ref_period = rev.index[0]
+
             if "Net Income" in f.index and len(f.columns) >= 2:
                 ni = f.loc["Net Income"].sort_index(ascending=False)
                 ann_profit_series = (ni.iloc[0] - ni.iloc[1]) / abs(ni.iloc[1])
@@ -72,8 +83,10 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
             "Revenue": info.get("totalRevenue"),
             "ROE": info.get("returnOnEquity"),
             "Revenue_Growth_YoY": ann_rev_growth,  # 👈 ใช้ค่า Annual ที่คำนวณเอง
+            "Revenue_Growth_YoY_ref": ann_rev_ref_period,  # 📦 metadata สำหรับ growth cache เท่านั้น
             "Profit_Growth_YoY": ann_profit_growth,  # 👈 ใช้ค่า Annual Net Income ที่คำนวณเอง (CANSLIM)
             "NetProfit_Growth_QoQY": qoqy_growth,  # 👈 ใช้ค่า QoQ ที่คำนวณเอง
+            "NetProfit_Growth_QoQY_ref": qoqy_ref_period,  # 📦 metadata สำหรับ growth cache เท่านั้น
             "Market_Cap": info.get("marketCap"),
         }
     except Exception:
@@ -83,10 +96,95 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
             "Revenue": None,
             "ROE": None,
             "Revenue_Growth_YoY": None,
+            "Revenue_Growth_YoY_ref": None,
             "Profit_Growth_YoY": None,
             "NetProfit_Growth_QoQY": None,
+            "NetProfit_Growth_QoQY_ref": None,
             "Market_Cap": None,
         }
+
+
+def _load_growth_cache() -> Dict[str, Dict[str, Any]]:
+    """โหลด growth cache เดิม (ถ้ามี) เป็น dict คีย์ด้วย Ticker"""
+    if not GROWTH_CACHE_FILE.exists():
+        return {}
+    df = pd.read_csv(GROWTH_CACHE_FILE)
+    df["Ticker"] = df["Ticker"].astype(str).str.strip()
+    return {row["Ticker"]: row.to_dict() for _, row in df.iterrows()}
+
+
+def _save_growth_cache(cache: Dict[str, Dict[str, Any]]) -> None:
+    GROWTH_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    cols = [
+        "Ticker",
+        "Revenue_Growth_YoY",
+        "Revenue_Growth_YoY_ref_period",
+        "Revenue_Growth_YoY_fetched_date",
+        "NetProfit_Growth_QoQY",
+        "NetProfit_Growth_QoQY_ref_period",
+        "NetProfit_Growth_QoQY_fetched_date",
+    ]
+    df = pd.DataFrame(list(cache.values()))
+    if df.empty:
+        df = pd.DataFrame(columns=cols)
+    else:
+        df = df.reindex(columns=cols)
+    df.to_csv(GROWTH_CACHE_FILE, index=False, encoding="utf-8-sig")
+
+
+def _is_fresh(fetched_date_str: Any) -> bool:
+    if fetched_date_str is None or (isinstance(fetched_date_str, float) and pd.isna(fetched_date_str)):
+        return False
+    try:
+        fetched = datetime.strptime(str(fetched_date_str)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return False
+    return (date.today() - fetched).days <= GROWTH_CACHE_MAX_AGE_DAYS
+
+
+def apply_growth_cache_fallback(fundamental_data: Dict[str, Dict[str, Any]]) -> None:
+    """เติม Revenue_Growth_YoY / NetProfit_Growth_QoQY ที่เป็น None ในรอบนี้ ด้วยค่าจาก
+    cache ที่เคยดึงสำเร็จ (ถ้ายังไม่หมดอายุ) และอัปเดต cache ด้วยค่าที่ดึงสำเร็จรอบนี้
+    ไม่แตะ field อื่น ไม่แตะ threshold/logic การกรองใดๆ — แก้แค่ที่มาของค่า growth
+    """
+    cache = _load_growth_cache()
+    today_str = date.today().isoformat()
+    recovered_from_cache = 0
+
+    for ticker, data in fundamental_data.items():
+        entry = cache.get(ticker, {"Ticker": ticker})
+
+        # Revenue_Growth_YoY
+        if data.get("Revenue_Growth_YoY") is not None:
+            entry["Revenue_Growth_YoY"] = data["Revenue_Growth_YoY"]
+            ref = data.get("Revenue_Growth_YoY_ref")
+            entry["Revenue_Growth_YoY_ref_period"] = str(ref)[:10] if ref is not None else None
+            entry["Revenue_Growth_YoY_fetched_date"] = today_str
+        elif _is_fresh(entry.get("Revenue_Growth_YoY_fetched_date")):
+            data["Revenue_Growth_YoY"] = entry.get("Revenue_Growth_YoY")
+            recovered_from_cache += 1
+
+        # NetProfit_Growth_QoQY
+        if data.get("NetProfit_Growth_QoQY") is not None:
+            entry["NetProfit_Growth_QoQY"] = data["NetProfit_Growth_QoQY"]
+            ref = data.get("NetProfit_Growth_QoQY_ref")
+            entry["NetProfit_Growth_QoQY_ref_period"] = str(ref)[:10] if ref is not None else None
+            entry["NetProfit_Growth_QoQY_fetched_date"] = today_str
+        elif _is_fresh(entry.get("NetProfit_Growth_QoQY_fetched_date")):
+            data["NetProfit_Growth_QoQY"] = entry.get("NetProfit_Growth_QoQY")
+            recovered_from_cache += 1
+
+        cache[ticker] = entry
+
+        # metadata keys ใช้แค่ตอน merge เข้า cache ไม่ต้องส่งต่อไปยัง daily_snapshot
+        data.pop("Revenue_Growth_YoY_ref", None)
+        data.pop("NetProfit_Growth_QoQY_ref", None)
+
+    _save_growth_cache(cache)
+    print(
+        f"   📦 [Growth Cache] เติมค่าจาก cache ที่เคยดึงสำเร็จ {recovered_from_cache} field, "
+        f"cache สะสมทั้งหมด {len(cache)} ticker"
+    )
 
 
 def download_history_and_build_snapshot() -> None:
@@ -184,6 +282,8 @@ def download_history_and_build_snapshot() -> None:
                 for future in as_completed(futures):
                     t, fund_data = future.result()
                     fundamental_data[t] = fund_data
+
+    apply_growth_cache_fallback(fundamental_data)
 
     for row in daily_snapshot:
         t = row["Ticker"]
