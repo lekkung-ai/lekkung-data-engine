@@ -9,7 +9,71 @@ on:
       - main
 
 jobs:
+  check-freshness:
+    # Guards against the scheduled run duplicating a same-day update that the
+    # local Task Scheduler job (update_stockdesk.bat) already pushed. Only
+    # 'schedule'-triggered runs are gated - manual workflow_dispatch and push
+    # always run, since those are always intentional.
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Checkout stockdesk (combined.json only)
+        if: github.event_name == 'schedule'
+        uses: actions/checkout@v4
+        with:
+          repository: lekkung-ai/lekkung-stockdesk
+          token: ${{ secrets.DASHBOARD_PAT }}
+          sparse-checkout: |
+            data/scans/combined.json
+          sparse-checkout-cone-mode: false
+          path: stockdesk_check
+
+      - name: Check if today's data already pushed
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "Event is '${{ github.event_name }}' (not schedule) - running unconditionally."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TODAY_BKK=$(TZ='Asia/Bangkok' date +%Y-%m-%d)
+          echo "Today (Asia/Bangkok): $TODAY_BKK"
+
+          FILE="stockdesk_check/data/scans/combined.json"
+          if [ ! -f "$FILE" ]; then
+            echo "Could not read $FILE - running pipeline to be safe."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          GENERATED_AT=$(python3 -c "import json; print(json.load(open('$FILE')).get('generated_at',''))")
+          echo "Latest combined.json generated_at: $GENERATED_AT"
+
+          if [ -z "$GENERATED_AT" ]; then
+            echo "generated_at field missing - running pipeline to be safe."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # generated_at already carries its own UTC offset (e.g. "...+07:00"),
+          # so its date component IS the Bangkok-local date already - comparing
+          # it directly to TODAY_BKK avoids the UTC-runner day-boundary trap.
+          DATA_DATE=$(python3 -c "from datetime import datetime; print(datetime.fromisoformat('$GENERATED_AT').date().isoformat())")
+          echo "Data date: $DATA_DATE"
+
+          if [ "$DATA_DATE" = "$TODAY_BKK" ]; then
+            echo "Today's data ($TODAY_BKK) already exists in lekkung-stockdesk - likely pushed by the local Task Scheduler run. Skipping this scheduled run."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Data is stale (latest is $DATA_DATE, today is $TODAY_BKK) - running pipeline."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   run-pipeline:
+    needs: check-freshness
+    if: needs.check-freshness.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout data_engine repository
@@ -36,6 +100,17 @@ jobs:
 
       - name: Run Master Pipeline (all)
         run: python run_all.py all
+
+      - name: Commit symbol tracker
+        # 1_get_symbols.py updates data/symbol_tracker.json (grace-period
+        # state for the universe list). Commit it back to this repo so the
+        # next run - cloud or local - sees the same history.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/symbol_tracker.json
+          git commit -m "Update symbol tracker" || echo "No changes to commit"
+          git push
 
       - name: Checkout stockdesk repository
         uses: actions/checkout@v4
@@ -77,8 +152,8 @@ jobs:
       - name: Commit and Push to stockdesk
         run: |
           cd stockdesk_repo
-          git config user.name "Data Engine Bot"
-          git config user.email "dataengine@lekkung.ai"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Automated data update from Data Engine" || echo "No changes to commit"
           git push
