@@ -75,6 +75,27 @@ FLAT_SLOPE_RANGE = 2.5
 NEAR_BREAK_PCT = 5.0
 
 # ============================================================
+# 📉 MARKET BREADTH / FTD-DD THRESHOLDS (calculate_breadth.py)
+# ============================================================
+BREADTH_MA_PERIODS = [10, 20, 50, 200]
+BREADTH_BACKFILL_DAYS = 120       # trading days of breadth/SET-index history to output
+BREADTH_MIN_HISTORY_DAYS = MIN_HISTORY_DAYS  # universe filter, reuses the 252-day rule used elsewhere
+NEW_HIGH_LOW_WINDOW = 252          # trailing window for "new 52W high/low" (calendar convention: 1 trading year)
+SPARKLINE_DAYS = 30
+
+SET_INDEX_YF_SYMBOL = "^SET.BK"
+SET_INDEX_FETCH_PERIOD = "2y"      # enough lookback for MA200 + FTD/DD state machine warm-up
+
+DD_MIN_DECLINE_PCT = 0.2           # Distribution Day: SET index down >= this %, on higher volume than prior day
+FTD_MIN_GAIN_PCT = 1.5             # Follow-Through Day: SET index up >= this %, on higher volume than prior day
+FTD_WINDOW_START_DAY = 4           # FTD only counts on day 4-10 of a rally attempt (O'Neil convention)
+FTD_WINDOW_END_DAY = 10
+
+MARKET_STAGE_DD_CORRECTION = 6     # dd_count in trailing 25 sessions >= this -> "Correction"
+MARKET_STAGE_DD_PRESSURE = 4       # dd_count in trailing 25 sessions >= this -> "Under Pressure"
+MARKET_STAGE_MA50_PRESSURE_PCT = 35  # pct_above_ma50 below this -> "Under Pressure" even if DD count is low
+
+# ============================================================
 # 🤖 EXTERNAL SERVICES
 # ============================================================
 LINE_TOKEN = os.getenv("LINE_TOKEN", "")

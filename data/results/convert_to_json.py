@@ -22,6 +22,7 @@ import numpy as np
 # ปรับ path ตรงนี้ให้ตรงกับเครื่องจริง
 INPUT_DIR = Path(__file__).parent          # โฟลเดอร์ที่มีไฟล์ CSV ผลสแกน
 OUTPUT_DIR = Path(__file__).parent / "output"  # โฟลเดอร์ที่จะเก็บไฟล์ JSON ที่แปลงแล้ว
+DAILY_PRICES_FILE = INPUT_DIR / "daily_prices.csv"  # universe เต็ม พร้อม Revenue/NetProfit growth ราย ticker
 
 FILES = {
     "sepa": "sepa_result.csv",
@@ -67,7 +68,28 @@ def build_individual_jsons() -> dict[str, list[dict]]:
     return results
 
 
-def build_combined(individual: dict[str, list[dict]]) -> list[dict]:
+def build_growth_map() -> dict[str, dict]:
+    """
+    Revenue_Growth_YoY / NetProfit_Growth_QoQY ราย ticker จาก daily_prices.csv (universe เต็ม
+    ทุกหุ้นที่ผ่าน step ดาวน์โหลดราคา ไม่ใช่แค่ตัวที่ผ่าน scan_lekkung_growth.py ซึ่งกรองเฉพาะหุ้นที่
+    Growth เป็นบวกทั้งคู่แล้ว - ใช้อันนี้แทนเวลาต้องแยก แดง/ม่วง/เขียว ของหุ้นทั้ง universe)
+    NaN ของ Yahoo (รู้ปัญหาอยู่แล้ว) ถูกเก็บเป็น None ไม่ปัดเป็น 0 เพื่อไม่ให้ปนกับ "ไม่โต"
+    """
+    df = read_csv_safe(DAILY_PRICES_FILE)
+    if df is None or "Ticker" not in df.columns:
+        return {}
+    growth_map = {}
+    for _, row in df.iterrows():
+        yoy = row.get("Revenue_Growth_YoY")
+        qoq = row.get("NetProfit_Growth_QoQY")
+        growth_map[row["Ticker"]] = {
+            "growth_yoy": None if pd.isna(yoy) else float(yoy),
+            "growth_qoq": None if pd.isna(qoq) else float(qoq),
+        }
+    return growth_map
+
+
+def build_combined(individual: dict[str, list[dict]], growth_map: dict[str, dict]) -> list[dict]:
     """
     รวมผลทุก scan เป็นตารางเดียวต่อ 1 ticker (สำหรับหน้า Scanner 'ทั้งหมด')
     universe = หุ้นที่ผ่านอย่างน้อย 1 scan (sepa / kell / wyckoff_stage / breakout)
@@ -123,6 +145,8 @@ def build_combined(individual: dict[str, list[dict]]) -> list[dict]:
             "stage": stage,
             "rs_score": rs_map.get(ticker),
             "combo_score": combo_score,
+            "growth_yoy": growth_map.get(ticker, {}).get("growth_yoy"),
+            "growth_qoq": growth_map.get(ticker, {}).get("growth_qoq"),
         })
 
     # เรียงตาม combo_score มาก -> น้อย แล้วตาม rs_score มาก -> น้อย
@@ -178,7 +202,8 @@ def main():
         out_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("\nกำลังรวมข้อมูลทุก scan เข้าตารางเดียว (combined.json)...")
-    combined = build_combined(individual)
+    growth_map = build_growth_map()
+    combined = build_combined(individual, growth_map)
     combined_path = OUTPUT_DIR / "combined.json"
     combined_out = {
         "generated_at": datetime.now(timezone(timedelta(hours=7))).strftime("%Y-%m-%dT%H:%M:%S+07:00"),

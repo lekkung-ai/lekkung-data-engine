@@ -104,6 +104,7 @@ def main():
         SCANNER_DIR / "scan_stage_all.py",       # 👈 กู้คืนให้ Vercel
         SCANNER_DIR / "scan_ppbp.py",            # 👈 กู้คืนให้ Vercel
         DATA_DIR / "results" / "convert_to_json.py", # 👈 สร้างไฟล์ JSON สำหรับ Dashboard
+        SCANNER_DIR / "calculate_breadth.py",        # 👈 SET Market Breadth + FTD/DD + sparklines (/breadth page)
     ]
 
     news_scripts = [
