@@ -142,10 +142,13 @@ jobs:
           
           # 3. Save News
           python scripts/save_news.py || echo "save_news failed"
-          
+
+          # 3b. Save Research (broker analysis)
+          python scripts/save_research.py || echo "save_research failed"
+
           # 4. Save SEC 59-2 / 246
           python -X utf8 scripts/save_sec_reports.py || echo "save_sec_reports failed"
-          
+
           # 5. Compute scan days
           python -X utf8 scripts/compute_scan_days.py || echo "compute_scan_days failed"
 
