@@ -2,24 +2,37 @@ name: Daily Stock Data Engine
 
 on:
   schedule:
+    # Kept as a last-resort safety net - GitHub's own schedule trigger has
+    # been proven to fire 2-5h late (see docs/external-trigger.md for the
+    # measured delay), so the primary trigger is now an external cron
+    # (cron-job.org) hitting workflow_dispatch on time instead. This cron
+    # entry still exists so the pipeline eventually runs even if the
+    # external cron itself is ever down.
     - cron: '11 11 * * 1-5' # 18:11 ICT (UTC+7) Mon-Fri
-  workflow_dispatch: # Allows manual trigger
+  workflow_dispatch: # Manual trigger, and the target of the external cron-job.org trigger
+    inputs:
+      force:
+        description: 'Run the full pipeline even if today''s data is already fresh'
+        required: false
+        type: boolean
+        default: false
   push:
     branches:
       - main
 
 jobs:
   check-freshness:
-    # Guards against the scheduled run duplicating a same-day update that the
-    # local Task Scheduler job (update_stockdesk.bat) already pushed. Only
-    # 'schedule'-triggered runs are gated - manual workflow_dispatch and push
-    # always run, since those are always intentional.
+    # Guards against a run duplicating a same-day update that's already
+    # landed (from the local Task Scheduler job, an earlier workflow_dispatch,
+    # or the schedule trigger itself). Applies to every event type now -
+    # schedule, workflow_dispatch, and push all skip when today's data is
+    # already fresh - except workflow_dispatch with force=true, which always
+    # runs (for a manually-forced re-run when you specifically want one).
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
     steps:
       - name: Checkout stockdesk (combined.json only)
-        if: github.event_name == 'schedule'
         uses: actions/checkout@v4
         with:
           repository: lekkung-ai/lekkung-stockdesk
@@ -32,8 +45,8 @@ jobs:
       - name: Check if today's data already pushed
         id: check
         run: |
-          if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "Event is '${{ github.event_name }}' (not schedule) - running unconditionally."
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "force=true - running unconditionally."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -64,7 +77,7 @@ jobs:
           echo "Data date: $DATA_DATE"
 
           if [ "$DATA_DATE" = "$TODAY_BKK" ]; then
-            echo "Today's data ($TODAY_BKK) already exists in lekkung-stockdesk - likely pushed by the local Task Scheduler run. Skipping this scheduled run."
+            echo "Today's data ($TODAY_BKK) already exists in lekkung-stockdesk - likely pushed by an earlier run today (local Task Scheduler or an earlier trigger). Skipping (event: ${{ github.event_name }}, force not set)."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           else
             echo "Data is stale (latest is $DATA_DATE, today is $TODAY_BKK) - running pipeline."
