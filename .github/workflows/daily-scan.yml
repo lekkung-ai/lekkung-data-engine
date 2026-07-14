@@ -182,3 +182,26 @@ jobs:
           git add -A
           git commit -m "Automated data update from Data Engine" || echo "No changes to commit"
           git push
+
+      - name: Fetch earnings feed (F45 / MD&A / งบการเงิน)
+        # Deliberately placed after the main commit+push above, and isolated
+        # with continue-on-error - a failure here (or in the commit step
+        # below) can never hold back or fail the scan JSON that already
+        # landed. Worst case: yesterday's earnings_feed.json stays in place
+        # until the next successful run (this one, the 09:45 ICT
+        # iaa-research-morning.yml run, or a manual retry).
+        continue-on-error: true
+        run: |
+          cd stockdesk_repo
+          python -X utf8 scripts/fetch_earnings.py
+
+      - name: Commit and push earnings feed
+        continue-on-error: true
+        run: |
+          cd stockdesk_repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/data/earnings/earnings_feed.json
+          git commit -m "Update earnings feed" || echo "No changes to commit"
+          git pull --rebase
+          git push

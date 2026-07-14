@@ -57,3 +57,25 @@ jobs:
           git commit -m "Morning IAA research update" || echo "No changes to commit"
           git pull --rebase
           git push
+
+      - name: Fetch earnings feed (F45 / MD&A / งบการเงิน)
+        # Second (and only other) script this morning run does - no
+        # Playwright/browser needed, just JSON API calls, so no extra deps
+        # beyond the Python setup already above. Isolated with
+        # continue-on-error so a failure here can't affect the IAA
+        # commit+push that already landed above.
+        continue-on-error: true
+        run: |
+          cd stockdesk_repo
+          python -X utf8 scripts/fetch_earnings.py
+
+      - name: Commit and push earnings feed
+        continue-on-error: true
+        run: |
+          cd stockdesk_repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/data/earnings/earnings_feed.json
+          git commit -m "Morning earnings feed update" || echo "No changes to commit"
+          git pull --rebase
+          git push
