@@ -1,0 +1,59 @@
+name: IAA Research Morning Fetch
+
+# Lightweight, separate from daily-scan.yml on purpose (does NOT touch that
+# workflow's freshness guard / force input logic) - runs only
+# fetch_iaa_research.py and pushes only research_iaa.json to stockdesk.
+# Broker research (SETTrade IAA) is mostly published before/around market
+# open, well before the main 17:30 ICT pipeline run - this catches same-day
+# research earlier so it's usable during the trading day instead of only
+# showing up after the evening run.
+#
+# Like daily-scan.yml, this also accepts workflow_dispatch so it can be
+# triggered externally (cron-job.org) if GitHub's own schedule trigger turns
+# out to run late for this one too - see docs/external-trigger.md for the
+# same pattern already set up for the main pipeline.
+
+on:
+  schedule:
+    - cron: '45 2 * * 1-5' # 09:45 ICT (UTC+7) Mon-Fri
+  workflow_dispatch:
+
+jobs:
+  fetch-iaa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout data_engine repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Playwright (only dependency this script needs)
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Checkout stockdesk repository
+        uses: actions/checkout@v4
+        with:
+          repository: lekkung-ai/lekkung-stockdesk
+          token: ${{ secrets.DASHBOARD_PAT }}
+          path: stockdesk_repo
+
+      - name: Fetch IAA research (merges with existing file - no gaps)
+        run: |
+          python tools/research/fetch_iaa_research.py \
+            --out stockdesk_repo/data/scans/research_iaa.json \
+            --pages 3
+
+      - name: Commit and push research_iaa.json only
+        run: |
+          cd stockdesk_repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/scans/research_iaa.json
+          git commit -m "Morning IAA research update" || echo "No changes to commit"
+          git pull --rebase
+          git push

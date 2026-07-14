@@ -136,7 +136,16 @@ jobs:
         run: |
           mkdir -p stockdesk_repo/data/scans
           cp -r data/results/output/*.json stockdesk_repo/data/scans/
-          
+
+      - name: Fetch IAA research (merges with existing file - no gaps)
+        # Same script the separate 09:45 ICT iaa-research-morning.yml run
+        # uses - merge-by-uuid logic means running it again here at 17:30 is
+        # safe/idempotent, just picks up whatever's new since the morning run.
+        run: |
+          python tools/research/fetch_iaa_research.py \
+            --out stockdesk_repo/data/scans/research_iaa.json \
+            --pages 3 || echo "fetch_iaa_research failed"
+
       - name: Post-process StockDesk data
         run: |
           DATESTAMP=$(TZ='Asia/Bangkok' date +%Y-%m-%d)
