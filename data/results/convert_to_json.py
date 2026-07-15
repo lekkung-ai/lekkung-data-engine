@@ -33,6 +33,7 @@ FILES = {
     "stage_all": "stage_all.csv",        # Stage ทุกหุ้น (ไม่มี ADTV filter) สำหรับ SectorTickerGrid
     "ppbp": "ppbp_result.csv",           # Pocket Pivot Buy Point
     "lekkung": "lekkung_growth_scan.csv",
+    "lekkung_incomplete": "lekkung_incomplete.csv",  # tickers past price/liquidity screen but with incomplete fundamentals - transparency list, not a scan result
     "oneil": "canslim_result.csv",
     "weinstein": "weinstein_stages_result.csv",
 }

@@ -4,9 +4,9 @@ import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Force UTF-8 encoding for standard output/error on Windows
 if hasattr(sys.stdout, "reconfigure"):
@@ -23,7 +23,11 @@ warnings.filterwarnings("ignore")
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import (CHUNK_SIZE, DAILY_FILE, FUND_WORKERS, HISTORY_DIR,
-                    SYMBOLS_FILE)
+                    PRICE_FALLBACK_MAX_STALE_BUSINESS_DAYS,
+                    PRICE_FALLBACK_WARN_PCT, SYMBOLS_FILE)
+
+RETRY_MAX_TRIES = 2
+RETRY_SLEEP_SEC = 2.0
 
 # 📦 Growth Cache — เก็บค่า Revenue_Growth_YoY / NetProfit_Growth_QoQY ที่เคยดึงสำเร็จ
 # ข้ามรอบรัน เพื่อเติมให้ตัวที่ดึงพลาดในรอบนี้ (Yahoo .financials/.quarterly_financials
@@ -187,6 +191,110 @@ def apply_growth_cache_fallback(fundamental_data: Dict[str, Dict[str, Any]]) -> 
     )
 
 
+def business_days_between(d1: date, d2: date) -> int:
+    """Count business days (Mon-Fri) strictly between d1 and d2 (d2 > d1),
+    exclusive of d1, inclusive of d2. Same Mon-Fri approximation used
+    elsewhere in this codebase (SET holidays not excluded)."""
+    count = 0
+    d = d1
+    while d < d2:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            count += 1
+    return count
+
+
+def build_snapshot_row(ticker: str, df: pd.DataFrame, data_date: str, fallback: bool) -> Optional[Dict[str, Any]]:
+    """Compute technical columns + build the daily_snapshot row dict for one
+    ticker's OHLCV dataframe. Used for both freshly-downloaded data and
+    stale-file fallback data (the latter already has SMA/52W columns
+    precomputed from whenever the file was last refreshed)."""
+    if len(df) < 2:
+        return None
+    if fallback:
+        # Stale file already has SMA/52W columns computed - reuse as-is.
+        last_row = df.iloc[-1]
+        prev_row = df.iloc[-2]
+    else:
+        df = df.copy()
+        df["SMA_50"] = df["Close"].rolling(window=50).mean().round(2)
+        df["SMA_150"] = df["Close"].rolling(window=150).mean().round(2)
+        df["SMA_200"] = df["Close"].rolling(window=200).mean().round(2)
+        df["52W_High"] = df["Close"].rolling(window=252).max().round(2)
+        df["52W_Low"] = df["Close"].rolling(window=252).min().round(2)
+        save_file = HISTORY_DIR / f"{ticker}.csv"
+        df.to_csv(save_file)
+        last_row = df.iloc[-1]
+        prev_row = df.iloc[-2]
+
+    pct_change = ((last_row["Close"] - prev_row["Close"]) / prev_row["Close"]) * 100
+
+    return {
+        "Date": data_date,
+        "Ticker": ticker,
+        "Close": round(last_row["Close"], 2),
+        "Change_Pct": round(pct_change, 2),
+        "Volume": int(last_row["Volume"]),
+        "SMA_50": last_row["SMA_50"],
+        "SMA_150": last_row["SMA_150"],
+        "SMA_200": last_row["SMA_200"],
+        "52W_High": last_row["52W_High"],
+        "52W_Low": last_row["52W_Low"],
+        "data_date": data_date,
+        "fallback": fallback,
+    }
+
+
+def retry_single_ticker_download(ticker: str) -> Optional[pd.DataFrame]:
+    """Short, per-ticker retry for a ticker that failed the bulk batch
+    download - yfinance's bulk multi-ticker calls occasionally drop/empty a
+    handful of tickers for no persistent reason (same random-empty-response
+    behavior documented for .financials/.quarterly_financials elsewhere in
+    this file); a couple of individual retries often succeeds where the
+    batch call didn't."""
+    yf_t = f"{ticker}.BK"
+    for attempt in range(RETRY_MAX_TRIES):
+        try:
+            df = yf.download(yf_t, period="3y", interval="1d", auto_adjust=True, progress=False)
+            if not df.empty:
+                df = df.dropna(subset=["Close"])
+                if len(df) >= 200:
+                    return df
+        except Exception:
+            pass
+        time.sleep(RETRY_SLEEP_SEC)
+    return None
+
+
+def load_stale_fallback(ticker: str, today: date) -> Optional[Dict[str, Any]]:
+    """Reuse the existing data/history/{ticker}.csv file when fresh download
+    (bulk + retry) both failed. Refuses files older than
+    PRICE_FALLBACK_MAX_STALE_BUSINESS_DAYS business days - past that point a
+    ticker is more likely suspended/delisted than Yahoo being flaky, and
+    silently reusing ancient data would let a ghost linger in scan results
+    indefinitely."""
+    stale_path = HISTORY_DIR / f"{ticker}.csv"
+    if not stale_path.exists():
+        return None
+    try:
+        df = pd.read_csv(stale_path, index_col=0, parse_dates=True)
+    except Exception:
+        return None
+    if df.empty:
+        return None
+
+    last_date = df.index[-1].date()
+    age = business_days_between(last_date, today)
+    if age > PRICE_FALLBACK_MAX_STALE_BUSINESS_DAYS:
+        print(f"   ⚠️ [Fallback] {ticker}: stale >{PRICE_FALLBACK_MAX_STALE_BUSINESS_DAYS}d (last data {last_date}), dropped")
+        return None
+
+    row = build_snapshot_row(ticker, df, last_date.strftime("%Y-%m-%d"), fallback=True)
+    if row is None:
+        print(f"   ⚠️ [Fallback] {ticker}: stale file too short, dropped")
+    return row
+
+
 def download_history_and_build_snapshot() -> None:
     if not SYMBOLS_FILE.exists():
         print(f"❌ ไม่พบไฟล์ '{SYMBOLS_FILE.name}' กรุณารัน Step 1 ก่อนครับ")
@@ -202,6 +310,8 @@ def download_history_and_build_snapshot() -> None:
     daily_snapshot = []
     success_count = 0
     valid_tickers = []
+    chunk_failed_all: List[str] = []
+    today = datetime.now().date()
 
     for i in range(0, len(tickers), CHUNK_SIZE):
         chunk_tickers = tickers[i : i + CHUNK_SIZE]
@@ -224,50 +334,65 @@ def download_history_and_build_snapshot() -> None:
                 yf_t = f"{ticker}.BK"
                 if len(yf_tickers) > 1:
                     if yf_t not in data.columns.levels[0]:
+                        chunk_failed_all.append(ticker)
                         continue
                     df = data[yf_t].dropna(subset=["Close"])
                 else:
                     df = data.dropna(subset=["Close"])
 
                 if len(df) >= 200:
-                    df["SMA_50"] = df["Close"].rolling(window=50).mean().round(2)
-                    df["SMA_150"] = df["Close"].rolling(window=150).mean().round(2)
-                    df["SMA_200"] = df["Close"].rolling(window=200).mean().round(2)
-                    df["52W_High"] = df["Close"].rolling(window=252).max().round(2)
-                    df["52W_Low"] = df["Close"].rolling(window=252).min().round(2)
-
-                    # 🎯 เซฟไฟล์ประวัติลงโฟลเดอร์ HISTORY_DIR
-                    save_file = HISTORY_DIR / f"{ticker}.csv"
-                    df.to_csv(save_file)
-
-                    last_row = df.iloc[-1]
-                    prev_row = df.iloc[-2]
-                    pct_change = (
-                        (last_row["Close"] - prev_row["Close"]) / prev_row["Close"]
-                    ) * 100
-
-                    daily_snapshot.append(
-                        {
-                            "Date": df.index[-1].strftime("%Y-%m-%d"),
-                            "Ticker": ticker,
-                            "Close": round(last_row["Close"], 2),
-                            "Change_Pct": round(pct_change, 2),
-                            "Volume": int(last_row["Volume"]),
-                            "SMA_50": last_row["SMA_50"],
-                            "SMA_150": last_row["SMA_150"],
-                            "SMA_200": last_row["SMA_200"],
-                            "52W_High": last_row["52W_High"],
-                            "52W_Low": last_row["52W_Low"],
-                        }
-                    )
-
-                    valid_tickers.append(ticker)
-                    success_count += 1
+                    row = build_snapshot_row(ticker, df, today.strftime("%Y-%m-%d"), fallback=False)
+                    if row is not None:
+                        daily_snapshot.append(row)
+                        valid_tickers.append(ticker)
+                        success_count += 1
+                    else:
+                        chunk_failed_all.append(ticker)
+                else:
+                    chunk_failed_all.append(ticker)
             except Exception as e:
                 print(f"⚠️ Error downloading {ticker}: {e}")
-                continue
+                chunk_failed_all.append(ticker)
 
         time.sleep(1)
+
+    # 🔁 [Retry] short per-ticker retry for everything the bulk batch calls
+    # missed, then fall back to each ticker's existing (possibly stale)
+    # history file rather than dropping it from daily_prices.csv outright.
+    fallback_tickers: List[str] = []
+    dropped_tickers: List[str] = []
+    if chunk_failed_all:
+        print(f"\n🔁 [Retry] {len(chunk_failed_all)} ticker(s) failed bulk download, retrying individually...")
+        for ticker in chunk_failed_all:
+            retry_df = retry_single_ticker_download(ticker)
+            if retry_df is not None:
+                row = build_snapshot_row(ticker, retry_df, today.strftime("%Y-%m-%d"), fallback=False)
+                if row is not None:
+                    daily_snapshot.append(row)
+                    valid_tickers.append(ticker)
+                    success_count += 1
+                    continue
+            fb_row = load_stale_fallback(ticker, today)
+            if fb_row is not None:
+                daily_snapshot.append(fb_row)
+                valid_tickers.append(ticker)
+                fallback_tickers.append(ticker)
+            else:
+                dropped_tickers.append(ticker)
+
+        print(f"   📦 [Fallback] {len(fallback_tickers)} ticker(s) used stale history file, {len(dropped_tickers)} dropped (no usable file)")
+        if fallback_tickers:
+            print(f"      Fallback tickers: {', '.join(fallback_tickers)}")
+
+        fallback_pct = len(fallback_tickers) / len(tickers) if tickers else 0
+        if fallback_pct > PRICE_FALLBACK_WARN_PCT:
+            print(
+                f"\n{'='*80}\n"
+                f"🚨 WARNING: {len(fallback_tickers)}/{len(tickers)} tickers ({fallback_pct*100:.1f}%) "
+                f"needed stale-file fallback this run - this looks like a systemic Yahoo issue, "
+                f"not isolated per-ticker flakiness.\n"
+                f"{'='*80}"
+            )
 
     print(f"\n🔎 [Phase 2/2] กำลังดึงข้อมูลปัจจัยพื้นฐาน (PE, EPS, ROE)...")
     fundamental_data = {}
@@ -340,7 +465,10 @@ def download_history_and_build_snapshot() -> None:
         df_daily.to_csv(DAILY_FILE, index=False, encoding="utf-8-sig")
 
     print("\n" + "=" * 80)
-    print(f"🎉 อัปเดตเสร็จสมบูรณ์ (สำเร็จ {success_count}/{len(tickers)} ตัว)")
+    print(
+        f"🎉 อัปเดตเสร็จสมบูรณ์ (สด {success_count}/{len(tickers)} ตัว, "
+        f"fallback {len(fallback_tickers)} ตัว, ตัดออก {len(dropped_tickers)} ตัว)"
+    )
     print("=" * 80)
 
 

@@ -111,6 +111,26 @@ jobs:
           restore-keys: |
             history-${{ runner.os }}-
 
+      - name: Checkout stockdesk earnings feed (for lekkung F45 growth source)
+        # scan_lekkung_growth.py wants to read the most recently published
+        # earnings_feed.json (F45 NetProfit YoY) to use as the primary source
+        # for NetProfit_Growth_QoQY. The main stockdesk checkout further down
+        # this job is write-only and happens *after* run_all.py finishes, so
+        # this early, read-only sparse checkout is the only way the scanner
+        # can see it - inherently a day behind (yesterday's F45 feed, since
+        # today's hasn't been fetched yet), which is fine for this purpose.
+        # Never fails the job - scan_lekkung_growth.py falls back to
+        # Yahoo/cache on its own if this file isn't present.
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: lekkung-ai/lekkung-stockdesk
+          token: ${{ secrets.DASHBOARD_PAT }}
+          sparse-checkout: |
+            public/data/earnings/earnings_feed.json
+          sparse-checkout-cone-mode: false
+          path: stockdesk_earnings_check
+
       - name: Run Master Pipeline (all)
         run: python run_all.py all
 

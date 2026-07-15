@@ -69,6 +69,13 @@ RS_MIN_THRESHOLD = 70
 SEPA_SLOPE_MIN = 0.0
 WEINSTEIN_SLOPE = 1.0
 
+# 📉 PRICE DOWNLOAD FALLBACK (2_download_history.py) — when yf.download fails
+# or returns <200 bars for a ticker even after a short retry, reuse its
+# existing data/history/{ticker}.csv file instead of dropping it from
+# daily_prices.csv entirely, as long as that file isn't too stale.
+PRICE_FALLBACK_MAX_STALE_BUSINESS_DAYS = 5  # older than this -> drop (likely SP/delisted), not silently reused
+PRICE_FALLBACK_WARN_PCT = 0.10  # fallback rate above this fraction of the universe -> print a loud warning (systemic Yahoo issue, not per-ticker)
+
 BASE_WINDOW = 150
 MAX_BASE_WIDTH = 45.0
 FLAT_SLOPE_RANGE = 2.5
