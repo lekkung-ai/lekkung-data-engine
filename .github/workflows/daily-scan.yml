@@ -33,7 +33,7 @@ jobs:
       should_run: ${{ steps.check.outputs.should_run }}
     steps:
       - name: Checkout stockdesk (combined.json only)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: lekkung-ai/lekkung-stockdesk
           token: ${{ secrets.DASHBOARD_PAT }}
@@ -88,9 +88,11 @@ jobs:
     needs: check-freshness
     if: needs.check-freshness.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout data_engine repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -104,7 +106,7 @@ jobs:
           playwright install --with-deps chromium
 
       - name: Cache history data
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: data/history
           key: history-${{ runner.os }}-${{ github.run_id }}
@@ -121,7 +123,7 @@ jobs:
         # today's hasn't been fetched yet), which is fine for this purpose.
         # Never fails the job - scan_lekkung_growth.py falls back to
         # Yahoo/cache on its own if this file isn't present.
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         continue-on-error: true
         with:
           repository: lekkung-ai/lekkung-stockdesk
@@ -132,21 +134,11 @@ jobs:
           path: stockdesk_earnings_check
 
       - name: Run Master Pipeline (all)
+        id: run_pipeline
         run: python run_all.py all
 
-      - name: Commit symbol tracker
-        # 1_get_symbols.py updates data/symbol_tracker.json (grace-period
-        # state for the universe list). Commit it back to this repo so the
-        # next run - cloud or local - sees the same history.
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/symbol_tracker.json
-          git commit -m "Update symbol tracker" || echo "No changes to commit"
-          git push
-
       - name: Checkout stockdesk repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: lekkung-ai/lekkung-stockdesk
           token: ${{ secrets.DASHBOARD_PAT }}
@@ -195,13 +187,17 @@ jobs:
           python -X utf8 scripts/compute_scan_days.py || echo "compute_scan_days failed"
 
       - name: Commit and Push to stockdesk
+        id: push_stockdesk
+        # safe_push.py handles the news.json two-writers race (auto-merges a
+        # conflict there, aborts cleanly on any other conflicted file, and
+        # retries a rejected push up to 3x) instead of a plain
+        # add/commit/pull --rebase/push that used to leave the repo stuck
+        # mid-rebase for a human to clean up (2026-07-13/07-14 incidents).
         run: |
           cd stockdesk_repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Automated data update from Data Engine" || echo "No changes to commit"
-          git push
+          python scripts/safe_push.py --repo . --message "Automated data update from Data Engine" --add-all
 
       - name: Fetch earnings feed (F45 / MD&A / งบการเงิน)
         # Deliberately placed after the main commit+push above, and isolated
@@ -221,7 +217,54 @@ jobs:
           cd stockdesk_repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add public/data/earnings/earnings_feed.json
-          git commit -m "Update earnings feed" || echo "No changes to commit"
-          git pull --rebase
-          git push
+          python scripts/safe_push.py --repo . --message "Update earnings feed" --add public/data/earnings/earnings_feed.json
+
+      - name: Commit symbol tracker (data_engine repo)
+        # 1_get_symbols.py updates data/symbol_tracker.json (grace-period
+        # state for the universe list) - local housekeeping, not on the
+        # critical path. Moved to the very end (after the stockdesk push
+        # above has already succeeded) and made non-blocking: this step
+        # failing (permissions, a push conflict, anything) must never take
+        # down the actual scan data push earlier in this job - that was the
+        # bug that killed every cloud run since 2026-07-14 (this step used
+        # to run right after run_all.py, with no continue-on-error, so a 403
+        # here aborted the whole job before it ever reached the stockdesk
+        # push steps).
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/symbol_tracker.json
+          if git diff --cached --quiet; then
+            echo "No change to symbol_tracker.json - nothing to commit."
+          else
+            git commit -m "Update symbol tracker"
+            git pull --rebase
+            git push
+          fi
+
+      - name: Record pipeline status
+        # Runs regardless of what failed above (if: always()), so
+        # pipeline_status.json - and the yellow staleness banner it drives -
+        # always reflects this run's real outcome instead of silently
+        # freezing on whatever the last successful run happened to write.
+        # stockdesk_repo may not exist yet if run_all.py itself failed
+        # (the checkout step further up only runs on success), hence the
+        # fallback clone.
+        if: always()
+        run: |
+          if [ ! -d stockdesk_repo ]; then
+            git clone --quiet "https://x-access-token:${{ secrets.DASHBOARD_PAT }}@github.com/lekkung-ai/lekkung-stockdesk.git" stockdesk_repo
+          fi
+          cd stockdesk_repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ "${{ steps.run_pipeline.outcome }}" != "success" ]; then
+            python scripts/write_pipeline_status.py --status failure --failed-step "Run Master Pipeline (all)" --source cloud
+          elif [ "${{ steps.push_stockdesk.outcome }}" != "success" ]; then
+            python scripts/write_pipeline_status.py --status failure --failed-step "Commit and Push to stockdesk" --source cloud
+          else
+            python scripts/write_pipeline_status.py --status success --source cloud
+          fi
+          python scripts/safe_push.py --repo . --message "Update pipeline status" --add public/data/pipeline_status.json

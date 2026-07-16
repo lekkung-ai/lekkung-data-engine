@@ -275,12 +275,15 @@ def load_stale_fallback(ticker: str, today: date) -> Optional[Dict[str, Any]]:
     indefinitely."""
     stale_path = HISTORY_DIR / f"{ticker}.csv"
     if not stale_path.exists():
+        print(f"   ⚠️ [Fallback] {ticker}: no history file at all (never downloaded, or the cache miss lost it), dropped")
         return None
     try:
         df = pd.read_csv(stale_path, index_col=0, parse_dates=True)
-    except Exception:
+    except Exception as e:
+        print(f"   ⚠️ [Fallback] {ticker}: history file unreadable ({e}), dropped")
         return None
     if df.empty:
+        print(f"   ⚠️ [Fallback] {ticker}: history file empty, dropped")
         return None
 
     last_date = df.index[-1].date()

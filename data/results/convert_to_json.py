@@ -196,18 +196,34 @@ def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     print("กำลังแปลง CSV เป็น JSON...\n")
 
+    # Single timestamp for every file this run produces. Individual scan
+    # files (lekkung.json etc.) stay bare arrays for backward compatibility -
+    # their own freshness is tracked in the sibling generated_at.json
+    # manifest below instead of a wrapper object, so each scan page can show
+    # ITS OWN data's actual generation time instead of borrowing
+    # combined.json's (which used to silently drift out of sync whenever a
+    # partial/manual copy updated one but not the other - see the
+    # 2026-07-14/15 "header says yesterday, table says today" incident).
+    generated_at = datetime.now(timezone(timedelta(hours=7))).strftime("%Y-%m-%dT%H:%M:%S+07:00")
+
     individual = build_individual_jsons()
 
     for key, records in individual.items():
         out_path = OUTPUT_DIR / f"{key}.json"
         out_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    generated_at_manifest = {key: generated_at for key in individual.keys()}
+    (OUTPUT_DIR / "generated_at.json").write_text(
+        json.dumps(generated_at_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"  ✓ generated_at.json: {len(generated_at_manifest)} scan keys stamped {generated_at}")
+
     print("\nกำลังรวมข้อมูลทุก scan เข้าตารางเดียว (combined.json)...")
     growth_map = build_growth_map()
     combined = build_combined(individual, growth_map)
     combined_path = OUTPUT_DIR / "combined.json"
     combined_out = {
-        "generated_at": datetime.now(timezone(timedelta(hours=7))).strftime("%Y-%m-%dT%H:%M:%S+07:00"),
+        "generated_at": generated_at,
         "data": combined,
     }
     combined_path.write_text(json.dumps(combined_out, ensure_ascii=False, indent=2), encoding="utf-8")
