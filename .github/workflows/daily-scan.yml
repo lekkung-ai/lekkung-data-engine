@@ -211,13 +211,22 @@ jobs:
           cd stockdesk_repo
           python -X utf8 scripts/fetch_earnings.py
 
+      - name: Extract earnings reasons (rule-based, no AI)
+        # fetch_earnings.py above fully regenerates earnings_feed.json every
+        # run, so this must run every time too or the reason/reason_source
+        # fields it wrote last run get silently wiped.
+        continue-on-error: true
+        run: |
+          cd stockdesk_repo
+          python -X utf8 scripts/extract_reason.py
+
       - name: Commit and push earnings feed
         continue-on-error: true
         run: |
           cd stockdesk_repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          python scripts/safe_push.py --repo . --message "Update earnings feed" --add public/data/earnings/earnings_feed.json
+          python scripts/safe_push.py --repo . --message "Update earnings feed" --add public/data/earnings/earnings_feed.json public/data/earnings/reason_cache.json
 
       - name: Commit symbol tracker (data_engine repo)
         # 1_get_symbols.py updates data/symbol_tracker.json (grace-period
