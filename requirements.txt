@@ -4,6 +4,7 @@ requests
 beautifulsoup4
 yfinance
 playwright
+pymupdf
 feedparser
 plotly
 schedule
