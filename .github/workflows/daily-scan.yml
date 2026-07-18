@@ -51,9 +51,6 @@ jobs:
             exit 0
           fi
 
-          TODAY_BKK=$(TZ='Asia/Bangkok' date +%Y-%m-%d)
-          echo "Today (Asia/Bangkok): $TODAY_BKK"
-
           FILE="stockdesk_check/data/scans/combined.json"
           if [ ! -f "$FILE" ]; then
             echo "Could not read $FILE - running pipeline to be safe."
@@ -70,19 +67,38 @@ jobs:
             exit 0
           fi
 
-          # generated_at already carries its own UTC offset (e.g. "...+07:00"),
-          # so its date component IS the Bangkok-local date already - comparing
-          # it directly to TODAY_BKK avoids the UTC-runner day-boundary trap.
-          DATA_DATE=$(python3 -c "from datetime import datetime; print(datetime.fromisoformat('$GENERATED_AT').date().isoformat())")
-          echo "Data date: $DATA_DATE"
+          # Date-only comparison used to be enough to call data "fresh", but a
+          # run before market close (e.g. a stray manual run just after
+          # midnight) stamps today's date too - that let a same-day evening
+          # scan skip itself, and real market-close data for that day was
+          # never captured (2026-07-17 incident). A day's data only counts as
+          # fresh once it was generated at/after 17:00 Bangkok time (market
+          # close) on that same calendar day.
+          GENERATED_AT="$GENERATED_AT" python3 << 'PYEOF'
+          import os
+          from datetime import datetime, time
+          from zoneinfo import ZoneInfo
 
-          if [ "$DATA_DATE" = "$TODAY_BKK" ]; then
-            echo "Today's data ($TODAY_BKK) already exists in lekkung-stockdesk - likely pushed by an earlier run today (local Task Scheduler or an earlier trigger). Skipping (event: ${{ github.event_name }}, force not set)."
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Data is stale (latest is $DATA_DATE, today is $TODAY_BKK) - running pipeline."
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          fi
+          BKK = ZoneInfo('Asia/Bangkok')
+          MARKET_CLOSE = time(17, 0)
+
+          generated = datetime.fromisoformat(os.environ['GENERATED_AT']).astimezone(BKK)
+          now = datetime.now(BKK)
+
+          same_day = generated.date() == now.date()
+          after_close = generated.time() >= MARKET_CLOSE
+          fresh = same_day and after_close
+
+          stamp = generated.strftime('%Y-%m-%d %H:%M')
+          if fresh:
+              print(f'SKIP: data generated {stamp} (>= 17:00 today)')
+          else:
+              reason = 'before market close' if same_day else 'not from today'
+              print(f'RUN: data generated {stamp} ({reason})')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"should_run={'false' if fresh else 'true'}\n")
+          PYEOF
 
   run-pipeline:
     needs: check-freshness
