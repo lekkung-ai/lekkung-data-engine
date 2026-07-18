@@ -202,6 +202,15 @@ jobs:
           # 5. Compute scan days
           python -X utf8 scripts/compute_scan_days.py || echo "compute_scan_days failed"
 
+          # 6. Compute scan history (ย้อนหลัง view) - was missing from every
+          # pipeline path until now, same disease as the earnings reason wipe
+          # (a generator script nobody called), caught via a 3-day-stale
+          # lekkung_history.json in production.
+          python -X utf8 scripts/compute_scan_history.py || echo "compute_scan_history failed"
+
+          # 7. Compute new/dropped tickers per scan
+          python -X utf8 scripts/compute_scan_diff.py || echo "compute_scan_diff failed"
+
       - name: Commit and Push to stockdesk
         id: push_stockdesk
         # safe_push.py handles the news.json two-writers race (auto-merges a
