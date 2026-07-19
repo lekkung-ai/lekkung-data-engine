@@ -220,8 +220,14 @@ def build_snapshot_row(ticker: str, df: pd.DataFrame, data_date: str, fallback: 
         df["SMA_50"] = df["Close"].rolling(window=50).mean().round(2)
         df["SMA_150"] = df["Close"].rolling(window=150).mean().round(2)
         df["SMA_200"] = df["Close"].rolling(window=200).mean().round(2)
-        df["52W_High"] = df["Close"].rolling(window=252).max().round(2)
-        df["52W_Low"] = df["Close"].rolling(window=252).min().round(2)
+        # True 52-week high/low uses the day's actual intraday High/Low, not
+        # the closing price - a Close-based rolling max can never be exceeded
+        # by that same day's own Close, which made "at the 52W high" trivially
+        # true for any stock closing at a multi-month high and inflated the
+        # scanner's "NH" (near-high) badge across an implausibly large share
+        # of the universe on ordinary days.
+        df["52W_High"] = df["High"].rolling(window=252).max().round(2)
+        df["52W_Low"] = df["Low"].rolling(window=252).min().round(2)
         save_file = HISTORY_DIR / f"{ticker}.csv"
         df.to_csv(save_file)
         last_row = df.iloc[-1]

@@ -112,8 +112,13 @@ def scan_sepa():
             cur_sma_150 = float(sma_150.iloc[-1])
             cur_sma_200 = float(sma_200.iloc[-1])
 
-            low_52_week = float(price_series.iloc[-252:].min())
-            high_52_week = float(price_series.iloc[-252:].max())
+            # True 52-week high/low from the day's actual intraday High/Low,
+            # not the closing price - a Close-based max/min is trivially "hit"
+            # by that same day's own Close, which made T7 (near-high) pass far
+            # too often. `current_price` below stays Close-based, since T6/T7
+            # ask "is the current close within X% of the true high/low band".
+            low_52_week = float(df["Low"].iloc[-252:].min())
+            high_52_week = float(df["High"].iloc[-252:].max())
             sma_200_1m_ago = float(sma_200.iloc[-20])
 
             cond_1 = (current_price > cur_sma_150) and (current_price > cur_sma_200)

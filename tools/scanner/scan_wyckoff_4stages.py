@@ -9,7 +9,7 @@ warnings.filterwarnings("ignore")
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB, HISTORY_DIR, WYCKOFF_FILE
-from utils import calculate_adtv, load_price_volume
+from utils import calculate_adtv, load_full_df, load_price_volume
 
 
 def scan_all_4_stages():
@@ -37,8 +37,12 @@ def scan_all_4_stages():
             slope_pct = ((cur_sma_150 - past_sma_150) / past_sma_150) * 100
 
             curr_price = float(price_series.iloc[-1])
-            high_52w = float(price_series.tail(252).max())
-            low_52w = float(price_series.tail(252).min())
+            # True 52-week high/low from the day's actual intraday High/Low -
+            # load_price_volume only carries Close/Volume, so re-read the raw
+            # OHLC columns here rather than using Close for the high/low band.
+            full_df = load_full_df(file_path)
+            high_52w = float(pd.to_numeric(full_df["High"], errors="coerce").tail(252).max())
+            low_52w = float(pd.to_numeric(full_df["Low"], errors="coerce").tail(252).min())
 
             if high_52w == low_52w:
                 continue

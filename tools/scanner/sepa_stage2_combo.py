@@ -16,7 +16,7 @@ if hasattr(sys.stderr, "reconfigure"):
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB, COMBO_FILE, HISTORY_DIR, RS_FILE  # type: ignore
-from utils import calculate_adtv, load_price_volume  # type: ignore
+from utils import calculate_adtv, load_full_df, load_price_volume  # type: ignore
 
 
 def run_combo_scanner():
@@ -58,8 +58,12 @@ def run_combo_scanner():
             c_sma150 = float(sma_150.iloc[-1])
             c_sma200 = float(sma_200.iloc[-1])
 
-            high_52w = float(price_series.iloc[-252:].max())
-            low_52w = float(price_series.iloc[-252:].min())
+            # True 52-week high/low from the day's actual intraday High/Low -
+            # load_price_volume only carries Close/Volume, so re-read the raw
+            # OHLC columns here rather than using Close for the high/low band.
+            full_df = load_full_df(file_path)
+            high_52w = float(pd.to_numeric(full_df["High"], errors="coerce").tail(252).max())
+            low_52w = float(pd.to_numeric(full_df["Low"], errors="coerce").tail(252).min())
 
             sepa_1 = curr_p > c_sma150 and curr_p > c_sma200
             sepa_2 = c_sma150 > c_sma200
