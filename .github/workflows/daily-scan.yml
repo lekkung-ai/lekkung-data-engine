@@ -160,6 +160,23 @@ jobs:
           token: ${{ secrets.DASHBOARD_PAT }}
           path: stockdesk_repo
 
+      - name: Check universe drift (Mondays only)
+        # active_symbols.csv was already refreshed fresh by 1_get_symbols.py
+        # earlier in this same run_all.py call - this just diffs it against
+        # stockdesk_repo's hand-curated sector_map.json (checked out above)
+        # and writes universe_changes.json for the /settings page's pending-
+        # approval UI. Weekly, not daily - a real new listing/delisting is a
+        # rare event, and this avoids nagging with the same diff five times
+        # in a row before anyone's had a chance to act on it.
+        continue-on-error: true
+        run: |
+          TODAY_DOW=$(TZ='Asia/Bangkok' date +%u)
+          if [ "$TODAY_DOW" = "1" ] || [ "${{ github.event.inputs.force }}" = "true" ]; then
+            python tools/core/check_universe.py --sector-map stockdesk_repo/data/scans/sector_map.json
+          else
+            echo "Not Monday ($TODAY_DOW) - skipping universe check."
+          fi
+
       - name: Copy JSON to stockdesk
         run: |
           mkdir -p stockdesk_repo/data/scans
