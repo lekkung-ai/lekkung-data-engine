@@ -16,18 +16,18 @@ on:
         required: false
         type: boolean
         default: false
-  push:
-    branches:
-      - main
 
 jobs:
   check-freshness:
     # Guards against a run duplicating a same-day update that's already
     # landed (from the local Task Scheduler job, an earlier workflow_dispatch,
-    # or the schedule trigger itself). Applies to every event type now -
-    # schedule, workflow_dispatch, and push all skip when today's data is
+    # or the schedule trigger itself). Applies to both remaining trigger
+    # types - schedule and workflow_dispatch both skip when today's data is
     # already fresh - except workflow_dispatch with force=true, which always
     # runs (for a manually-forced re-run when you specifically want one).
+    # (A `push` trigger used to exist here too - removed 2026-07-21 because
+    # any push to main, at any time of day, was kicking off the full
+    # pipeline instead of only running on schedule/manual trigger.)
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
@@ -199,7 +199,16 @@ jobs:
           # 1. Save historical snapshot
           mkdir -p stockdesk_repo/data/history/$DATESTAMP
           cp -r data/results/output/*.json stockdesk_repo/data/history/$DATESTAMP/
-          
+          # topmover_charts.json is a ~2.2MB current-snapshot file (candlestick
+          # OHLC for the whole ticker universe, overwritten fresh every run) -
+          # nothing reads an *archived* copy of it (the /top-movers ย้อนหลัง
+          # view intentionally uses a sparkline for historical rows instead of
+          # a per-day candlestick, see compute_topmover_history.py), so
+          # archiving it daily would only add ~2.2MB/trading day forever for
+          # zero benefit. Drop it from the archive; data/scans/ still gets the
+          # live copy from the step above.
+          rm -f stockdesk_repo/data/history/$DATESTAMP/topmover_charts.json
+
           cd stockdesk_repo
           # Update index.json
           python -c "import json,os,sys; f=sys.argv[1]; d=sys.argv[2]; idx=json.load(open(f)) if os.path.exists(f) else []; idx=sorted(set(idx+[d])); json.dump(idx,open(f,'w'))" "data/history/index.json" "$DATESTAMP"
