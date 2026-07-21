@@ -106,6 +106,7 @@ def main():
         DATA_DIR / "results" / "convert_to_json.py", # 👈 สร้างไฟล์ JSON สำหรับ Dashboard
         SCANNER_DIR / "calculate_breadth.py",        # 👈 SET Market Breadth + FTD/DD + sparklines (/breadth page)
         SCANNER_DIR / "build_topmover_charts.py",    # 👈 mini candlestick + EMA200 bundle (/top-movers page)
+        SCANNER_DIR / "fetch_topmover_ranking.py",   # 👈 today's ranking snapshot, archived daily for /top-movers ย้อนหลัง view
         TOOLS_DIR / "macro" / "fetch_macro.py",       # 👈 Commodity/FX (/macro page)
     ]
 

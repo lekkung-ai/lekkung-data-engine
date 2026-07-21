@@ -228,6 +228,11 @@ jobs:
           # 7. Compute new/dropped tickers per scan
           python -X utf8 scripts/compute_scan_diff.py || echo "compute_scan_diff failed"
 
+          # 8. Compute Top Movers history (ย้อนหลัง view) - aggregates the
+          # topmover_ranking.json archived per-day above (step 1) by
+          # data_engine's fetch_topmover_ranking.py, same pattern as step 6.
+          python -X utf8 scripts/compute_topmover_history.py || echo "compute_topmover_history failed"
+
       - name: Commit and Push to stockdesk
         id: push_stockdesk
         # safe_push.py handles the news.json two-writers race (auto-merges a
