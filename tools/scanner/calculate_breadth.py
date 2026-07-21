@@ -266,7 +266,15 @@ def main():
             "low": round(float(row["Low"]), 2),
             "close": round(float(row["Close"]), 2),
             "volume": int(row["Volume"]),
-            "marker": row["marker"],
+            # compute_ftd_dd() only ever assigns None/"DD"/"FTD", but pandas
+            # can silently upcast an object column of None+str to float64/NaN
+            # during a later reindex/concat depending on the pandas version -
+            # confirmed happening on the CI runner's pinned version but not
+            # locally, which let a bare `NaN` token (invalid JSON - Python's
+            # json module writes it anyway unless allow_nan=False) reach
+            # breadth.json and break every Vercel build importing it as a
+            # module (2026-07-21 incident). pd.isna() catches None either way.
+            "marker": None if pd.isna(row["marker"]) else row["marker"],
         })
 
     breadth_records = []
@@ -304,8 +312,12 @@ def main():
         "breadth": breadth_records,
     }
 
+    # allow_nan=False turns any future stray NaN/Infinity into a loud crash
+    # right here in the pipeline log, instead of writing invalid JSON that
+    # only surfaces hours later as a broken Vercel build with no obvious
+    # link back to this script (exactly what happened 2026-07-21).
     out_path = OUTPUT_DIR / "breadth.json"
-    out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     print(f"  ✓ breadth.json: {len(breadth_records)} วัน, {out_path.stat().st_size / 1024:.1f} KB")
 
     print("📉 [Breadth] กำลังสร้าง sparklines...")
@@ -316,7 +328,7 @@ def main():
         "data": sparklines,
     }
     spark_path = OUTPUT_DIR / "sparklines.json"
-    spark_path.write_text(json.dumps(sparklines_out, ensure_ascii=False), encoding="utf-8")
+    spark_path.write_text(json.dumps(sparklines_out, ensure_ascii=False, allow_nan=False), encoding="utf-8")
     print(f"  ✓ sparklines.json: {len(sparklines)} ticker, {spark_path.stat().st_size / 1024:.1f} KB")
 
 
