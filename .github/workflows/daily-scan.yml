@@ -333,3 +333,33 @@ jobs:
             python scripts/write_pipeline_status.py --status success --source cloud
           fi
           python scripts/safe_push.py --repo . --message "Update pipeline status" --add public/data/pipeline_status.json
+
+  record-skipped-status:
+    needs: check-freshness
+    if: needs.check-freshness.outputs.should_run == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout data_engine repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Checkout stockdesk repository
+        uses: actions/checkout@v6
+        with:
+          repository: lekkung-ai/lekkung-stockdesk
+          token: ${{ secrets.DASHBOARD_PAT }}
+          path: stockdesk_repo
+
+      - name: Record pipeline status (skipped)
+        run: |
+          cd stockdesk_repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python scripts/write_pipeline_status.py --status success --source cloud
+          python scripts/safe_push.py --repo . --message "Update pipeline status (already fresh)" --add public/data/pipeline_status.json
