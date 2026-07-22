@@ -22,7 +22,7 @@ COMMODITIES = {
         "name_en": "WTI Crude Oil",
         "unit": "USD/บาร์เรล",
         "zone": "energy",
-        "tickers": [],  # ไม่มีในตาราง mapping ที่ผู้ใช้ให้ - แสดงเป็นข้อมูลเฉยๆ ไม่มี chip หุ้น
+        "tickers": [],
     },
     "NG=F": {
         "name_th": "ก๊าซธรรมชาติ",
@@ -31,12 +31,26 @@ COMMODITIES = {
         "zone": "energy",
         "tickers": ["GULF", "BGRIM", "GPSC"],
     },
+    "HRC=F": {
+        "name_th": "เหล็กแผ่นม้วนร้อน",
+        "name_en": "US HRC Steel Futures",
+        "unit": "USD/ตัน",
+        "zone": "industrial",
+        "tickers": ["TSTH", "TMT", "BSBM", "PAP", "MILL"],
+    },
     "SB=F": {
         "name_th": "น้ำตาลทรายดิบ #11",
         "name_en": "Sugar #11",
         "unit": "เซนต์/ปอนด์",
         "zone": "agri",
         "tickers": ["KSL", "KTIS", "KBS", "BRR"],
+    },
+    "ZC=F": {
+        "name_th": "ข้าวโพดเลี้ยงสัตว์",
+        "name_en": "Corn Futures",
+        "unit": "เซนต์/บุชเชล",
+        "zone": "agri",
+        "tickers": ["CPF", "TFG", "GFPT"],
     },
     "ZS=F": {
         "name_th": "ถั่วเหลือง",
@@ -52,19 +66,47 @@ COMMODITIES = {
         "zone": "agri",
         "tickers": ["CPF", "TFG", "GFPT", "TVO"],
     },
+    "ZW=F": {
+        "name_th": "ข้าวสาลี",
+        "name_en": "Wheat Futures",
+        "unit": "เซนต์/บุชเชล",
+        "zone": "agri",
+        "tickers": ["NSL", "PB", "SNNP", "TFM"],
+    },
+    "CPO=F": {
+        "name_th": "น้ำมันปาล์มดิบ (มาเลเซีย)",
+        "name_en": "Malaysian Crude Palm Oil",
+        "unit": "USD/เมตริกตัน",
+        "zone": "agri",
+        "tickers": ["UVAN", "UPOIC", "VPO"],
+    },
     "ZL=F": {
         "name_th": "น้ำมันถั่วเหลือง",
         "name_en": "Soybean Oil",
         "unit": "เซนต์/ปอนด์",
         "zone": "agri",
-        "tickers": [],  # เดิมกันไว้เป็น palm proxy - ไม่ต้องใช้แล้ว ดู docstring ด้านบน
+        "tickers": [],
+    },
+    "HG=F": {
+        "name_th": "ทองแดง",
+        "name_en": "Copper Futures",
+        "unit": "USD/ปอนด์",
+        "zone": "industrial",
+        "tickers": ["KCE", "HANA", "DELTA", "SVI"],
+    },
+    "ALI=F": {
+        "name_th": "อลูมิเนียม",
+        "name_en": "Aluminum Futures",
+        "unit": "USD/เมตริกตัน",
+        "zone": "industrial",
+        "tickers": ["CBG", "OSP"],
     },
     "GC=F": {
         "name_th": "ทองคำ",
         "name_en": "Gold",
         "unit": "USD/ออนซ์",
         "zone": "financial",
-        "tickers": [],  # ไม่มีในตาราง mapping ที่ผู้ใช้ให้ - แสดงเป็นข้อมูลเฉยๆ ไม่มี chip หุ้น
+        "tickers": [],
     },
     "THB=X": {
         "name_th": "อัตราแลกเปลี่ยน ดอลลาร์/บาท",
@@ -73,12 +115,26 @@ COMMODITIES = {
         "zone": "financial",
         "tickers": ["DELTA", "KCE", "HANA", "AOT"],
     },
-    "CPO=F": {
-        "name_th": "น้ำมันปาล์มดิบ (มาเลเซีย)",
-        "name_en": "Malaysian Crude Palm Oil",
-        "unit": "USD/เมตริกตัน",
-        "zone": "agri",
-        "tickers": ["UVAN", "UPOIC", "VPO"],
+    "DX-Y.NYB": {
+        "name_th": "ดัชนีดอลลาร์สหรัฐ",
+        "name_en": "US Dollar Index (DXY)",
+        "unit": "ดัชนี",
+        "zone": "financial",
+        "tickers": ["DELTA", "KCE", "HANA"],
+    },
+    "^TNX": {
+        "name_th": "อัตราผลตอบแทนพันธบัตร US 10 ปี",
+        "name_en": "US 10-Year Treasury Yield",
+        "unit": "%",
+        "zone": "financial",
+        "tickers": ["TLI", "BLA", "KBANK", "BBL", "SCB"],
+    },
+    "BDRY": {
+        "name_th": "ค่าระวางเรือสินค้าแห้ง (BDI ETF)",
+        "name_en": "Dry Bulk Freight ETF (BDRY)",
+        "unit": "USD/หุ้น",
+        "zone": "financial",
+        "tickers": ["PSL", "TTA"],
     },
 }
 
@@ -92,5 +148,6 @@ BANK_TICKERS = [
 ZONE_LABELS = {
     "energy": "พลังงาน",
     "agri": "เกษตร-อาหาร",
-    "financial": "การเงิน",
+    "industrial": "โลหะ-อุตสาหกรรม",
+    "financial": "การเงิน-ดอกเบี้ย",
 }
