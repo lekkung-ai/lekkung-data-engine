@@ -2,13 +2,11 @@ name: Daily Stock Data Engine
 
 on:
   schedule:
-    # Kept as a last-resort safety net - GitHub's own schedule trigger has
-    # been proven to fire 2-5h late (see docs/external-trigger.md for the
-    # measured delay), so the primary trigger is now an external cron
-    # (cron-job.org) hitting workflow_dispatch on time instead. This cron
-    # entry still exists so the pipeline eventually runs even if the
-    # external cron itself is ever down.
+    # Primary runs triggered via cron-job.org or GitHub Actions schedules:
+    # 1. 18:11 ICT (11:11 UTC) Mon-Fri: Initial post-market close scan
+    # 2. 20:00 ICT (13:00 UTC) Mon-Fri: Evening wrap-up scan for late NVDR, SEC filings & news
     - cron: '11 11 * * 1-5' # 18:11 ICT (UTC+7) Mon-Fri
+    - cron: '0 13 * * 1-5'  # 20:00 ICT (UTC+7) Mon-Fri
   workflow_dispatch: # Manual trigger, and the target of the external cron-job.org trigger
     inputs:
       force:
@@ -20,14 +18,7 @@ on:
 jobs:
   check-freshness:
     # Guards against a run duplicating a same-day update that's already
-    # landed (from the local Task Scheduler job, an earlier workflow_dispatch,
-    # or the schedule trigger itself). Applies to both remaining trigger
-    # types - schedule and workflow_dispatch both skip when today's data is
-    # already fresh - except workflow_dispatch with force=true, which always
-    # runs (for a manually-forced re-run when you specifically want one).
-    # (A `push` trigger used to exist here too - removed 2026-07-21 because
-    # any push to main, at any time of day, was kicking off the full
-    # pipeline instead of only running on schedule/manual trigger.)
+    # landed. Supports both 18:11 ICT (market close) and 20:00 ICT (evening wrap-up) runs.
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
@@ -67,33 +58,31 @@ jobs:
             exit 0
           fi
 
-          # Date-only comparison used to be enough to call data "fresh", but a
-          # run before market close (e.g. a stray manual run just after
-          # midnight) stamps today's date too - that let a same-day evening
-          # scan skip itself, and real market-close data for that day was
-          # never captured (2026-07-17 incident). A day's data only counts as
-          # fresh once it was generated at/after 17:00 Bangkok time (market
-          # close) on that same calendar day.
           GENERATED_AT="$GENERATED_AT" python3 << 'PYEOF'
           import os
           from datetime import datetime, time
           from zoneinfo import ZoneInfo
 
           BKK = ZoneInfo('Asia/Bangkok')
-          MARKET_CLOSE = time(17, 0)
-
           generated = datetime.fromisoformat(os.environ['GENERATED_AT']).astimezone(BKK)
           now = datetime.now(BKK)
 
           same_day = generated.date() == now.date()
-          after_close = generated.time() >= MARKET_CLOSE
-          fresh = same_day and after_close
+
+          # If running during evening wrap-up (>= 19:30 ICT), ensure data was generated after 19:30 ICT.
+          # Otherwise (17:00-19:30 ICT), ensure data was generated after 17:00 ICT.
+          if now.time() >= time(19, 30):
+              fresh = same_day and generated.time() >= time(19, 30)
+              cutoff_str = "19:30"
+          else:
+              fresh = same_day and generated.time() >= time(17, 0)
+              cutoff_str = "17:00"
 
           stamp = generated.strftime('%Y-%m-%d %H:%M')
           if fresh:
-              print(f'SKIP: data generated {stamp} (>= 17:00 today)')
+              print(f'SKIP: data generated {stamp} (>= {cutoff_str} today)')
           else:
-              reason = 'before market close' if same_day else 'not from today'
+              reason = f'before {cutoff_str}' if same_day else 'not from today'
               print(f'RUN: data generated {stamp} ({reason})')
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
