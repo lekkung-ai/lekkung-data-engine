@@ -1,12 +1,6 @@
 """
 macro_mapping.py — commodity/FX metadata + which Thai stock tickers each one
 affects. Single file, edit here to add/remove commodities or change mappings.
-
-หมายเหตุปาล์มน้ำมัน: แผนเดิมตั้งใจใช้ ZL=F (soybean oil) เป็น proxy เพราะไม่คิดว่า
-จะมีข้อมูลปาล์มจริงบน Yahoo — probe แล้วพบว่า CPO=F (USD Malaysian Crude Palm
-Oil, CME) มีข้อมูลจริง (verified 2026-07-12, 165 แท่ง/200 วันปฏิทิน ไม่มีช่องว่าง)
-จึงย้าย mapping ปาล์ม (UVAN/UPOIC/VPO) ไปผูกกับ CPO=F แทน ZL=F เหลือแค่ข้อมูล
-ถั่วเหลืองเฉยๆ ไม่มี ticker ผูกแยก (ไม่ได้อยู่ในตารางที่ผู้ใช้ให้)
 """
 
 COMMODITIES = {
@@ -31,12 +25,82 @@ COMMODITIES = {
         "zone": "energy",
         "tickers": ["GULF", "BGRIM", "GPSC"],
     },
+    "HO=F": {
+        "name_th": "น้ำมันดีเซล (Heating Oil)",
+        "name_en": "Heating Oil / Diesel Proxy",
+        "unit": "USD/แกลลอน",
+        "zone": "energy",
+        "tickers": ["TOP", "SPRC", "BCP", "IRPC", "PTTGC"],
+    },
+    "RB=F": {
+        "name_th": "น้ำมันเบนซิน (RBOB Gasoline)",
+        "name_en": "RBOB Gasoline",
+        "unit": "USD/แกลลอน",
+        "zone": "energy",
+        "tickers": ["TOP", "SPRC", "BCP"],
+    },
     "HRC=F": {
         "name_th": "เหล็กแผ่นม้วนร้อน",
         "name_en": "US HRC Steel Futures",
         "unit": "USD/ตัน",
         "zone": "industrial",
         "tickers": ["TSTH", "TMT", "BSBM", "PAP", "MILL"],
+    },
+    "PETRO_HDPE": {
+        "name_th": "ส่วนต่างเม็ดพลาสติก HDPE",
+        "name_en": "HDPE Polymer Spread",
+        "unit": "USD/เมตริกตัน",
+        "zone": "industrial",
+        "tickers": ["PTTGC", "SCC", "IRPC"],
+    },
+    "PETRO_PX": {
+        "name_th": "ส่วนต่างพารากไซลีน (PX)",
+        "name_en": "Paraxylene Petrochem Spread",
+        "unit": "USD/เมตริกตัน",
+        "zone": "industrial",
+        "tickers": ["IVL", "PTTGC", "SCC"],
+    },
+    "PETRO_PTA": {
+        "name_th": "ส่วนต่าง PTA (โพลีเอสเตอร์)",
+        "name_en": "PTA Polymer Spread",
+        "unit": "USD/เมตริกตัน",
+        "zone": "industrial",
+        "tickers": ["IVL"],
+    },
+    "HG=F": {
+        "name_th": "ทองแดง",
+        "name_en": "Copper Futures",
+        "unit": "USD/ปอนด์",
+        "zone": "industrial",
+        "tickers": ["KCE", "HANA", "DELTA", "SVI"],
+    },
+    "ALI=F": {
+        "name_th": "อลูมิเนียม",
+        "name_en": "Aluminum Futures",
+        "unit": "USD/เมตริกตัน",
+        "zone": "industrial",
+        "tickers": ["CBG", "OSP"],
+    },
+    "SICOM_RSS3": {
+        "name_th": "ยางพารา RSS3 (SICOM)",
+        "name_en": "SICOM Rubber RSS3",
+        "unit": "เซนต์/กก.",
+        "zone": "agri",
+        "tickers": ["STA", "STGT", "TEGH", "NER", "TRUBB"],
+    },
+    "SICOM_TSR20": {
+        "name_th": "ยางพาราแท่ง TSR20 (SICOM)",
+        "name_en": "SICOM Rubber TSR20",
+        "unit": "เซนต์/กก.",
+        "zone": "agri",
+        "tickers": ["STA", "TEGH", "NER"],
+    },
+    "SHFE_RU": {
+        "name_th": "ยางพาราเซี่ยงไฮ้ (SHFE)",
+        "name_en": "Shanghai Natural Rubber",
+        "unit": "หยวน/เมตริกตัน",
+        "zone": "agri",
+        "tickers": ["STA", "STGT", "NER", "TEGH"],
     },
     "SB=F": {
         "name_th": "น้ำตาลทรายดิบ #11",
@@ -80,26 +144,26 @@ COMMODITIES = {
         "zone": "agri",
         "tickers": ["UVAN", "UPOIC", "VPO"],
     },
+    "HE=F": {
+        "name_th": "สุกร (หมูเนื้อแดง Lean Hogs)",
+        "name_en": "Lean Hogs Futures",
+        "unit": "เซนต์/ปอนด์",
+        "zone": "agri",
+        "tickers": ["CPF", "TFG", "BTG", "GFPT"],
+    },
+    "KC=F": {
+        "name_th": "กาแฟอาราบิก้า (Coffee)",
+        "name_en": "Coffee Arabica Futures",
+        "unit": "เซนต์/ปอนด์",
+        "zone": "agri",
+        "tickers": ["OR", "CBG", "CENTEL", "MINT"],
+    },
     "ZL=F": {
         "name_th": "น้ำมันถั่วเหลือง",
         "name_en": "Soybean Oil",
         "unit": "เซนต์/ปอนด์",
         "zone": "agri",
         "tickers": [],
-    },
-    "HG=F": {
-        "name_th": "ทองแดง",
-        "name_en": "Copper Futures",
-        "unit": "USD/ปอนด์",
-        "zone": "industrial",
-        "tickers": ["KCE", "HANA", "DELTA", "SVI"],
-    },
-    "ALI=F": {
-        "name_th": "อลูมิเนียม",
-        "name_en": "Aluminum Futures",
-        "unit": "USD/เมตริกตัน",
-        "zone": "industrial",
-        "tickers": ["CBG", "OSP"],
     },
     "GC=F": {
         "name_th": "ทองคำ",
@@ -136,10 +200,15 @@ COMMODITIES = {
         "zone": "financial",
         "tickers": ["PSL", "TTA"],
     },
+    "ZIM": {
+        "name_th": "ค่าระวางเรือตู้คอนเทนเนอร์ (Proxy)",
+        "name_en": "Container Shipping Index Proxy",
+        "unit": "USD/หุ้น",
+        "zone": "financial",
+        "tickers": ["RCL", "WICE", "III", "SJWD"],
+    },
 }
 
-# ธนาคารทุกตัวใน sector Financials > Banking (อ้างอิง stockdesk/data/scans/
-# sector_map.json ณ 2026-07-12) - แก้ตรงนี้ถ้ามีธนาคารเข้า/ออก sector
 BANK_TICKERS = [
     "BAY", "BBL", "CIMBT", "CREDIT", "KBANK", "KKP",
     "KTB", "LHFG", "SCB", "TCAP", "TISCO", "TTB",

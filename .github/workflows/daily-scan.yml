@@ -70,13 +70,13 @@ jobs:
           same_day = generated.date() == now.date()
 
           # If running during evening wrap-up (>= 19:30 ICT), ensure data was generated after 19:30 ICT.
-          # Otherwise (17:00-19:30 ICT), ensure data was generated after 17:00 ICT.
+          # Otherwise (16:30-19:30 ICT), ensure data was generated after 16:30 ICT (market close).
           if now.time() >= time(19, 30):
               fresh = same_day and generated.time() >= time(19, 30)
               cutoff_str = "19:30"
           else:
-              fresh = same_day and generated.time() >= time(17, 0)
-              cutoff_str = "17:00"
+              fresh = same_day and generated.time() >= time(16, 30)
+              cutoff_str = "16:30"
 
           stamp = generated.strftime('%Y-%m-%d %H:%M')
           if fresh:
