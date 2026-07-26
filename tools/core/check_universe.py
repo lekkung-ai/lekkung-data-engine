@@ -1,191 +1,333 @@
 """
-check_universe.py - weekly (Monday) universe-drift detector.
+check_universe.py - weekly (Monday) universe-drift detector & rename heuristic.
 
-active_symbols.csv (RESULTS_DIR/active_symbols.csv) is refreshed EVERY
-pipeline run by 1_get_symbols.py from TradingView's live SET-stock scanner
-(with a 3-run grace period before a ticker is actually dropped) - it is
-already an up-to-date "what's really listed right now" list.
-stockdesk's data/scans/sector_map.json, by contrast, is hand-curated and
-does NOT auto-update (see stockdesk/scripts/validate_sector_mapping.py's own
-docstring) - a real newly-listed ticker shows up in active_symbols.csv
-immediately but stays sector "N/A" on the dashboard until a human manually
-patches sector_map.json. validate_sector_mapping.py already detects this
-drift, but only as a console warning nobody reliably reads.
+Fetches complete listed stocks (SET + mai) from SETTrade API (`https://www.settrade.com/api/set/stock/list`).
+Compares against the current universe (`sector_map.json`) and categorizes changes into groups:
+1. `new`: Real IPOs (new ticker, company name not matched to any delisted stock).
+2. `delisted`: Confirmed delisted stocks (missing from list AND confirmed delisted/404 via per-ticker profile check).
+3. `possible_delisted`: Tickers missing from main list but per-ticker profile still shows Listed (flagged for review, not deleted).
+4. `renamed`: Exact/Normalized company name match or `oldSymbols` match between old & new tickers ({ "old": ..., "new": ..., "company": ... }).
+5. `possible_rename`: Suspected rename due to partial company name similarity ({ "old": ..., "new": ..., "old_company": ..., "new_company": ..., "reason": ... }).
 
-This script does the same diff but writes it as a structured, actionable
-file for the /settings page's pending-approval UI to render - and goes
-further by asking TradingView for a name/sector/industry guess for each new
-ticker, so a human has something to approve/correct instead of a bare ticker
-symbol. It NEVER touches sector_map.json or active_symbols.csv itself -
-purely detects and reports; a human approves via /settings, which generates
-a copy-paste prompt for a separate Claude Code session to actually apply
-the edit (see /settings page for that flow).
-
-Usage:
-    python check_universe.py                          # writes real output (only runs on Monday, Bangkok time)
-    python check_universe.py --force                   # run regardless of weekday (manual testing)
-    python check_universe.py --dry-run                  # print only, write nothing
-    python check_universe.py --sector-map <path>         # override the default sibling-repo sector_map.json path
-    python check_universe.py --out <dir>                 # write into <dir> instead of the real results/output tree
-
-Output: data/results/output/universe_changes.json (picked up by the
-existing "cp -r data/results/output/*.json stockdesk_repo/data/scans/" step
-in daily-scan.yml, same as every other pipeline JSON output)
+Supports ignore list (`universe_ignore.json`) to exclude previously rejected tickers.
+Outputs idempotent `universe_changes.json` for consumption by the Dashboard /settings page.
 """
 
 import argparse
+import difflib
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone, timedelta
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-import pandas as pd
 import requests
-
-sys.path.append(str(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-from config import SYMBOLS_FILE, RESULTS_DIR  # noqa: E402
 
 BANGKOK_TZ = timezone(timedelta(hours=7))
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Sibling-repo layout assumed elsewhere in this codebase (see stockdesk's
-# scripts/calculate_report_card.py DATA_ENGINE_HISTORY_DIR) - both repos
-# checked out under a common parent. Overridable via --sector-map for the
-# CI job, where stockdesk gets checked out to a differently-named path.
 DEFAULT_SECTOR_MAP_PATH = os.path.normpath(
     os.path.join(SCRIPT_DIR, "..", "..", "..", "..", "Claude", "dashboard", "stockdesk", "data", "scans", "sector_map.json")
 )
+DEFAULT_IGNORE_PATH = os.path.normpath(
+    os.path.join(SCRIPT_DIR, "..", "..", "..", "..", "Claude", "dashboard", "stockdesk", "data", "scans", "universe_ignore.json")
+)
+DEFAULT_OUTPUT_PATH = os.path.normpath(
+    os.path.join(SCRIPT_DIR, "..", "..", "..", "..", "Claude", "dashboard", "stockdesk", "data", "scans", "universe_changes.json")
+)
 
-TV_SCAN_URL = "https://scanner.tradingview.com/thailand/scan"
-
-
-def load_active_symbols() -> set:
-    if not os.path.exists(SYMBOLS_FILE):
-        print(f"[check-universe] SKIP - {SYMBOLS_FILE} not found (run 1_get_symbols.py first)")
-        return set()
-    df = pd.read_csv(SYMBOLS_FILE)
-    return set(df["Ticker"].astype(str))
-
-
-def is_plain_stock_ticker(ticker: str) -> bool:
-    """Mirrors 1_get_symbols.py's own TradingView-scanner exclusion filter
-    (REITs, funds, warrants, foreign-board lines) - active_symbols.csv only
-    ever contains this narrower "plain stock" universe by design (see
-    fetch_active_symbols() in 1_get_symbols.py), so comparing sector_map.json's
-    full ticker set (which does include REITs/funds, e.g. CPNREIT, DIF,
-    3BBIF) against it directly would flag every REIT as "delisted" on every
-    single run - confirmed against real data before this filter was added.
-    Only tickers that would have qualified for active_symbols.csv in the
-    first place are meaningful candidates for the delisted-ticker check."""
-    return (
-        len(ticker) <= 7
-        and not ticker.endswith(("-R", ".R", "-F", ".F", "-W", "-P"))
-        and "REIT" not in ticker
-    )
+SETTRADE_STOCK_LIST_URL = "https://www.settrade.com/api/set/stock/list"
+SETTRADE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://www.settrade.com/th/home",
+}
 
 
-def load_sector_map_tickers(path: str) -> set:
+def fetch_settrade_universe() -> dict:
+    """Fetch full SET + mai stock universe from SETTrade API."""
+    session = requests.Session()
+    session.headers.update(SETTRADE_HEADERS)
+    try:
+        session.get("https://www.settrade.com/th/home", timeout=10)
+    except Exception as e:
+        print(f"[check-universe] Warning: SETTrade home fetch failed: {e}")
+
+    res = session.get(SETTRADE_STOCK_LIST_URL, timeout=15)
+    res.raise_for_status()
+    data = res.json()
+
+    sec_list = data.get("securitySymbols", [])
+    result = {}
+    for item in sec_list:
+        if item.get("securityType") == "S" and item.get("market") in ["SET", "mai"]:
+            symbol = item.get("symbol")
+            if not symbol:
+                continue
+            result[symbol] = {
+                "symbol": symbol,
+                "name_th": item.get("nameTH", "").strip(),
+                "name_en": item.get("nameEN", "").strip(),
+                "market": item.get("market"),
+                "sector": item.get("sector") or "",
+                "industry": item.get("industry") or "",
+                "old_symbols": item.get("oldSymbols") or [],
+            }
+    return result
+
+
+def fetch_ticker_profile_status(ticker: str) -> tuple[int, str, str]:
+    """Fetch per-ticker profile to strictly verify delisted vs listed status."""
+    url = f"https://www.settrade.com/api/set/stock/{ticker}/profile"
+    try:
+        res = requests.get(url, headers=SETTRADE_HEADERS, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            status = data.get("status") or "Listed"
+            name_th = data.get("name") or data.get("companyNameTH") or ticker
+            return 200, status, name_th
+        return res.status_code, "NotFound", ticker
+    except Exception:
+        return 500, "Error", ticker
+
+
+def normalize_company_name(name: str) -> str:
+    """Normalize Thai company name for heuristic matching."""
+    if not name:
+        return ""
+    s = name.strip()
+    s = re.sub(r"^บริษัท\s*", "", s)
+    s = re.sub(r"^บมจ\.\s*", "", s)
+    s = re.sub(r"\s*จำกัด\s*\(มหาชน\)\s*$", "", s)
+    s = re.sub(r"\s*\(มหาชน\)\s*$", "", s)
+    s = re.sub(r"\s*จำกัด\s*$", "", s)
+    s = re.sub(r"\s*\(ประเทศไทย\)\s*", "", s)
+    s = re.sub(r"[^\wก-๙]", "", s)
+    return s.lower()
+
+
+def load_sector_map(path: str) -> tuple[dict, dict]:
+    """Load current mapped universe from sector_map.json."""
     if not os.path.exists(path):
-        print(f"[check-universe] SKIP - sector_map not found at {path}")
-        return set()
+        print(f"[check-universe] Warning: sector_map not found at {path}")
+        return {}, {}
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    return set(data.get("ticker_to_sector", {}).keys())
+    ticker_to_sector = data.get("ticker_to_sector", {})
+    return data, ticker_to_sector
 
 
-def guess_company_info(tickers: list) -> dict:
-    """Best-effort name/sector/industry guess from TradingView's scanner for
-    specific new tickers - same 'thailand' scan endpoint 1_get_symbols.py
-    already uses, just with richer columns and an explicit symbol filter
-    instead of a bulk market-wide pull. This is explicitly a GUESS in
-    TradingView's own sector/industry taxonomy (not SET's official Thai
-    sector/subsector names) - the /settings approve UI lets a human correct
-    it before it's ever applied to sector_map.json. Never raises - a failed
-    guess just means the pending entry shows blank fields for manual fill-in."""
-    if not tickers:
-        return {}
-    payload = {
-        "filter": [
-            {"left": "exchange", "operation": "equal", "right": "SET"},
-            {"left": "name", "operation": "in_range", "right": tickers},
-        ],
-        "columns": ["name", "description", "sector", "industry"],
-        "range": [0, len(tickers)],
-    }
+def load_ignore_list(path: str) -> set:
+    """Load previously rejected tickers from universe_ignore.json."""
+    if not os.path.exists(path):
+        return set()
     try:
-        res = requests.post(TV_SCAN_URL, json=payload, timeout=15)
-        res.raise_for_status()
-        rows = res.json().get("data", [])
-        out = {}
-        for row in rows:
-            d = row.get("d", [])
-            if len(d) < 4:
-                continue
-            out[d[0]] = {"company_name": d[1], "guessed_sector": d[2], "guessed_subsector": d[3]}
-        return out
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        rejected = data.get("rejected", [])
+        return set(rejected)
     except Exception as e:
-        print(f"[check-universe] WARNING: TradingView company-info lookup failed: {e}")
-        return {}
+        print(f"[check-universe] Warning: Failed to load ignore list from {path}: {e}")
+        return set()
+
+
+def detect_with_custom_candidates(
+    live_universe: dict,
+    current_mapped: dict,
+    ignored_tickers: set,
+    custom_old_companies: dict = None
+) -> dict:
+    """Core detection engine supporting custom company name mapping & strict per-ticker delisted verification."""
+    custom_old_companies = custom_old_companies or {}
+    live_tickers = set(live_universe.keys())
+    current_tickers = set(current_mapped.keys())
+
+    live_tickers_filtered = live_tickers - ignored_tickers
+    current_tickers_filtered = current_tickers - ignored_tickers
+
+    new_candidate_keys = sorted(live_tickers_filtered - current_tickers_filtered)
+    delisted_candidate_keys = sorted(current_tickers_filtered - live_tickers_filtered)
+
+    unmapped_live = {k: live_universe[k] for k in new_candidate_keys}
+
+    renamed = []
+    possible_rename = []
+    resolved_new = set()
+    resolved_delisted = set()
+
+    # Pass 1: SETTrade oldSymbols match or Exact Normalized Company Name match
+    for old_t in delisted_candidate_keys:
+        if old_t in resolved_delisted:
+            continue
+
+        old_company = custom_old_companies.get(old_t, old_t)
+        norm_old = normalize_company_name(old_company)
+
+        for new_t in new_candidate_keys:
+            if new_t in resolved_new:
+                continue
+
+            new_info = unmapped_live[new_t]
+            old_syms = [s.upper() for s in new_info.get("old_symbols") or []]
+            new_company = new_info.get("name_th") or new_info.get("name_en") or new_t
+            norm_new = normalize_company_name(new_company)
+
+            if old_t.upper() in old_syms or (norm_old and norm_new and norm_old == norm_new):
+                renamed.append({
+                    "old": old_t,
+                    "new": new_t,
+                    "company": new_company,
+                    "reason": "Official rename match"
+                })
+                resolved_delisted.add(old_t)
+                resolved_new.add(new_t)
+                break
+
+    # Pass 2: Fuzzy company name match (possible_rename)
+    for old_t in delisted_candidate_keys:
+        if old_t in resolved_delisted:
+            continue
+        old_company = custom_old_companies.get(old_t, old_t)
+        norm_old = normalize_company_name(old_company)
+        if not norm_old or len(norm_old) < 4:
+            continue
+
+        for new_t in new_candidate_keys:
+            if new_t in resolved_new:
+                continue
+            new_info = unmapped_live[new_t]
+            new_company = new_info.get("name_th") or new_info.get("name_en") or new_t
+            norm_new = normalize_company_name(new_company)
+
+            ratio = difflib.SequenceMatcher(None, norm_old, norm_new).ratio()
+            if ratio >= 0.75:
+                possible_rename.append({
+                    "old": old_t,
+                    "new": new_t,
+                    "old_company": old_company,
+                    "new_company": new_company,
+                    "reason": f"High name similarity ({int(ratio * 100)}%)",
+                })
+                resolved_delisted.add(old_t)
+                resolved_new.add(new_t)
+                break
+
+    # Pass 3: Remaining New IPOs
+    final_new = []
+    for new_t in new_candidate_keys:
+        if new_t not in resolved_new:
+            info = unmapped_live[new_t]
+            final_new.append({
+                "ticker": new_t,
+                "company_name": info.get("name_th") or info.get("name_en") or new_t,
+                "market": info.get("market"),
+                "guessed_sector": info.get("sector") or "OTHER",
+                "guessed_subsector": info.get("industry") or "OTHER",
+            })
+
+    # Pass 4: Strict per-ticker profile check for Delisted vs Possible Delisted
+    final_delisted = []
+    possible_delisted = []
+    for old_t in delisted_candidate_keys:
+        if old_t in resolved_delisted:
+            continue
+        code, profile_status, comp_name = fetch_ticker_profile_status(old_t)
+        company = custom_old_companies.get(old_t) or comp_name or old_t
+
+        if code == 404 or profile_status.lower() == "delisted":
+            final_delisted.append({
+                "ticker": old_t,
+                "company_name": company,
+                "market": "SET",
+                "status": profile_status
+            })
+        else:
+            possible_delisted.append({
+                "ticker": old_t,
+                "company_name": company,
+                "market": "SET",
+                "status": profile_status,
+                "reason": "Missing from full list but profile still active (transient drop suspect)"
+            })
+
+    now_iso = datetime.now(BANGKOK_TZ).isoformat()
+    return {
+        "generated_at": now_iso,
+        "summary": {
+            "total_live": len(live_universe),
+            "total_current": len(current_mapped),
+            "new_count": len(final_new),
+            "delisted_count": len(final_delisted),
+            "possible_delisted_count": len(possible_delisted),
+            "renamed_count": len(renamed),
+            "possible_rename_count": len(possible_rename),
+        },
+        "new": final_new,
+        "delisted": final_delisted,
+        "possible_delisted": possible_delisted,
+        "renamed": renamed,
+        "possible_rename": possible_rename,
+    }
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true", help="print the diff, write nothing")
-    parser.add_argument("--force", action="store_true", help="run regardless of today's weekday")
-    parser.add_argument("--sector-map", default=DEFAULT_SECTOR_MAP_PATH, help="path to stockdesk's data/scans/sector_map.json")
-    parser.add_argument("--out", default=None, help="write into this dir instead of the real results/output tree")
+    parser = argparse.ArgumentParser(description="Universe drift detector & rename heuristic")
+    parser.add_argument("--dry-run", action="store_true", help="Print result, write nothing")
+    parser.add_argument("--force", action="store_true", help="Run regardless of day of week")
+    parser.add_argument("--sector-map", default=DEFAULT_SECTOR_MAP_PATH, help="Path to sector_map.json")
+    parser.add_argument("--ignore", default=DEFAULT_IGNORE_PATH, help="Path to universe_ignore.json")
+    parser.add_argument("--out", default=DEFAULT_OUTPUT_PATH, help="Path to output universe_changes.json")
     args = parser.parse_args()
 
     today = datetime.now(BANGKOK_TZ)
-    if today.weekday() != 0 and not args.force:  # 0 = Monday
-        print(f"[check-universe] SKIP - today ({today.strftime('%A')}) is not Monday. Use --force to override.")
+    if today.weekday() != 0 and not args.force:
+        print(f"[check-universe] SKIP - today ({today.strftime('%A')}) is not Monday. Use --force to run.")
         return
 
-    universe = load_active_symbols()
-    mapped = load_sector_map_tickers(args.sector_map)
-    if not universe or not mapped:
-        print("[check-universe] Aborting - could not load one or both ticker sets.")
-        return
+    print("[check-universe] Fetching live universe from SETTrade API...")
+    live_universe = fetch_settrade_universe()
+    print(f"[check-universe] Live SETTrade universe fetched: {len(live_universe)} common stocks (SET + mai)")
 
-    new_tickers = sorted(universe - mapped)
-    mapped_plain_stocks = {t for t in mapped if is_plain_stock_ticker(t)}
-    delisted_tickers = sorted(mapped_plain_stocks - universe)
+    _, current_mapped = load_sector_map(args.sector_map)
+    print(f"[check-universe] Current mapped universe in sector_map.json: {len(current_mapped)} stocks")
 
-    print(f"[check-universe] Universe (active_symbols.csv): {len(universe)} tickers")
-    print(f"[check-universe] Mapped (sector_map.json): {len(mapped)} tickers")
-    print(f"[check-universe] New (unmapped): {len(new_tickers)} -> {', '.join(new_tickers) or '(none)'}")
-    print(f"[check-universe] Possibly delisted (mapped but not in active universe): {len(delisted_tickers)} -> {', '.join(delisted_tickers) or '(none)'}")
+    ignored_tickers = load_ignore_list(args.ignore)
+    if ignored_tickers:
+        print(f"[check-universe] Ignored tickers loaded: {len(ignored_tickers)}")
 
-    guesses = guess_company_info(new_tickers)
+    changes = detect_with_custom_candidates(live_universe, current_mapped, ignored_tickers)
 
-    output = {
-        "generated_at": today.isoformat(),
-        "new_tickers": [
-            {
-                "ticker": t,
-                "company_name": guesses.get(t, {}).get("company_name"),
-                "guessed_sector": guesses.get(t, {}).get("guessed_sector"),
-                "guessed_subsector": guesses.get(t, {}).get("guessed_subsector"),
-            }
-            for t in new_tickers
-        ],
-        "delisted_tickers": [{"ticker": t} for t in delisted_tickers],
-    }
+    print("\n" + "=" * 50)
+    print("📊 UNIVERSE DRIFT SUMMARY")
+    print("=" * 50)
+    print(f"Total Live Market (SET + mai): {changes['summary']['total_live']}")
+    print(f"Total Current Universe:        {changes['summary']['total_current']}")
+    print(f"New IPOs (new):                {changes['summary']['new_count']}")
+    print(f"Confirmed Delisted (delisted): {changes['summary']['delisted_count']}")
+    print(f"Suspected Delisted (review):   {changes['summary']['possible_delisted_count']}")
+    print(f"Renamed Tickers (renamed):     {changes['summary']['renamed_count']}")
+    print(f"Possible Renames (review):     {changes['summary']['possible_rename_count']}")
+    print("=" * 50)
 
     if args.dry_run:
-        print("\n[--dry-run] Not writing output file.")
-        print(json.dumps(output, ensure_ascii=False, indent=2))
+        print("\n[--dry-run] Output JSON:")
+        print(json.dumps(changes, ensure_ascii=False, indent=2))
         return
 
-    out_dir = args.out if args.out else os.path.join(RESULTS_DIR, "output")
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "universe_changes.json")
+    out_path = os.path.abspath(args.out)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
-    print(f"[check-universe] Wrote {out_path}")
+        json.dump(changes, f, ensure_ascii=False, indent=2)
+    print(f"[check-universe] Wrote output to {out_path}")
+
+    engine_output_dir = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "data", "results", "output"))
+    if os.path.exists(engine_output_dir):
+        engine_out_file = os.path.join(engine_output_dir, "universe_changes.json")
+        with open(engine_out_file, "w", encoding="utf-8") as f:
+            json.dump(changes, f, ensure_ascii=False, indent=2)
+        print(f"[check-universe] Also synced output to {engine_out_file}")
 
 
 if __name__ == "__main__":
