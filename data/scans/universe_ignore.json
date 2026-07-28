@@ -1,0 +1,4 @@
+{
+  "rejected": ["BLISS", "GSTEEL", "ACAP", "HEALTH", "PTECH", "SVI", "DV8", "THL", "WELL", "BANPU"],
+  "_note": "delisted/SP verified 2026-07-28, excluded from scan universe. | BANPU+BPP amalgamation to NewCo: old BANPU & BPP delisted, new company relists as 'BANPU' on 2026-08-04 (SP 07-17 to 08-03). ACTION after 08-04: (1) remove BANPU from this list - else new stock blocked permanently; note new entity may reset Yahoo history <200 bars so won't scan until bars accumulate. (2) add BPP here (delisted via merger)."
+}
