@@ -87,6 +87,7 @@ def main():
         CORE_DIR / "1_get_symbols.py",
         CORE_DIR / "2_download_history.py",
         CORE_DIR / "3_calculate_rs.py",
+        CORE_DIR / "4_calculate_sector_rs.py",
         TOOLS_DIR / "market" / "download_nvdr.py",
     ]
 
