@@ -203,59 +203,104 @@ def main():
     stockdesk_scans_dir = Path(__file__).resolve().parents[4] / "Claude" / "dashboard" / "stockdesk" / "data" / "scans"
     stockdesk_path = stockdesk_scans_dir / "macro_commodities.json"
 
-    # Load previous snapshots for fallback if fetching fails (check both local output and stockdesk)
+    # 1. Load previous VALID snapshots for fallback if fetching fails
     existing_commodities: dict[str, dict] = {}
     for p in [out_path, stockdesk_path]:
         if p.exists():
             try:
                 prev = json.loads(p.read_text(encoding="utf-8"))
                 for sym, item in prev.get("commodities", {}).items():
-                    if sym not in existing_commodities or len(item.get("series", [])) > len(existing_commodities[sym].get("series", [])):
-                        existing_commodities[sym] = item
+                    prev_close = item.get("latest", {}).get("close")
+                    prev_series = item.get("series", [])
+                    # Only accept previous item if it has a valid positive close price or non-empty series
+                    if (prev_close is not None and prev_close > 0) or len(prev_series) > 0:
+                        if sym not in existing_commodities:
+                            existing_commodities[sym] = item
+                        else:
+                            curr_series_len = len(existing_commodities[sym].get("series", []))
+                            if len(prev_series) > curr_series_len:
+                                existing_commodities[sym] = item
             except Exception:
                 pass
 
     symbols = list(COMMODITIES.items())
-    print(f"🌾 [Macro] กำลังดึงราคา commodity/FX {len(symbols)} รายการ (yfinance + TradingView API)...")
+    total_symbols = len(symbols)
+    print(f"🌾 [Macro] กำลังดึงราคา commodity/FX {total_symbols} รายการ (yfinance + TradingView API)...")
     out_commodities: dict[str, dict] = {}
+    successfully_fetched_count = 0
 
     for i, (symbol, meta) in enumerate(symbols):
-        print(f"  ⏳ ({i + 1}/{len(symbols)}) {symbol} ({meta['name_en']})...")
+        print(f"  ⏳ ({i + 1}/{total_symbols}) {symbol} ({meta['name_en']})...")
         data = fetch_symbol(symbol)
 
-        if data is None or not data.get("series"):
+        # Validate fetched data
+        is_valid_fetch = False
+        if data is not None:
+            close_val = data.get("latest", {}).get("close")
+            series_len = len(data.get("series", []))
+            # A valid fetch must have positive close price
+            if close_val is not None and close_val > 0 and (series_len > 0 or symbol in DIRECT_TV_MAPPING or symbol.startswith("PETRO_")):
+                is_valid_fetch = True
+
+        if is_valid_fetch and data is not None:
+            successfully_fetched_count += 1
+            data["last_success_date"] = data.get("latest", {}).get("date") or now_iso()[:10]
+            data["never_fetched"] = False
+            print(
+                f"     ✓ [NEW] latest={data['latest'].get('close')} ({data['latest'].get('date')}) "
+                f"1D={data.get('pct_1d')} 1M={data.get('pct_1m')} series={len(data.get('series', []))} วัน"
+            )
+        else:
+            # Fallback: Merge-on-write with existing valid snapshot
             if symbol in existing_commodities:
                 prev_item = existing_commodities[symbol]
-                prev_series = prev_item.get("series", [])
-                if data is None:
+                prev_close = prev_item.get("latest", {}).get("close")
+                if prev_close is not None and prev_close > 0:
                     data = {
-                        "latest": prev_item.get("latest", {"date": now_iso()[:10], "close": 0}),
+                        "latest": prev_item.get("latest"),
                         "pct_1d": prev_item.get("pct_1d"),
                         "pct_1m": prev_item.get("pct_1m"),
-                        "series": prev_series,
+                        "series": prev_item.get("series", []),
+                        "last_success_date": prev_item.get("last_success_date") or prev_item.get("latest", {}).get("date"),
+                        "never_fetched": prev_item.get("never_fetched", False),
+                        "is_stale_fallback": True,
                     }
-                    print(f"     🔄 fallback -> using existing snapshot data for {symbol}")
-                elif not data.get("series") and prev_series:
-                    data["series"] = prev_series
-                    if data.get("pct_1m") is None:
-                        data["pct_1m"] = prev_item.get("pct_1m")
+                    print(
+                        f"     🔄 [FALLBACK] kept existing valid snapshot for {symbol} "
+                        f"(close={data['latest'].get('close')}, last_success={data['last_success_date']})"
+                    )
+                else:
+                    data = None
+
             if data is None:
-                # Guaranteed safety: NEVER drop a commodity symbol
+                # Safe placeholder for symbols never fetched and no valid history
                 data = {
-                    "latest": {"date": now_iso()[:10], "close": 0.0},
+                    "latest": {"date": now_iso()[:10], "close": None},
                     "pct_1d": None,
                     "pct_1m": None,
                     "series": [],
+                    "last_success_date": None,
+                    "never_fetched": True,
                 }
-                print(f"     ⚠️ no fallback data for {symbol} -> created safe default entry")
+                print(f"     ⚠️ [PLACEHOLDER] no valid fallback for {symbol} -> created never_fetched entry")
 
         out_commodities[symbol] = {**meta, **data}
-        print(
-            f"     ✓ latest={data['latest'].get('close')} ({data['latest'].get('date')}) "
-            f"1D={data.get('pct_1d')} 1M={data.get('pct_1m')} series={len(data.get('series', []))} วัน"
-        )
-        if i < len(symbols) - 1:
+
+        if i < total_symbols - 1:
             time.sleep(FETCH_SLEEP_SEC)
+
+    # 2. File-Level Drop Guard
+    fetch_ratio = successfully_fetched_count / total_symbols if total_symbols > 0 else 0
+
+    if successfully_fetched_count == 0 and not existing_commodities:
+        print(f"\n❌ [Macro Drop Guard ABORT] 0/{total_symbols} symbols fetched and no existing valid data. Aborting file write!")
+        sys.exit(1)
+
+    if fetch_ratio < 0.5:
+        print(
+            f"\n⚠️ [Macro Drop Guard WARNING] Only {successfully_fetched_count}/{total_symbols} symbols fetched "
+            f"({fetch_ratio:.0%}). Likely CI IP rate-limited. Merged with existing valid snapshots."
+        )
 
     out = {
         "generated_at": now_iso(),
@@ -273,7 +318,7 @@ def main():
     json_str = json.dumps(out, ensure_ascii=False, indent=2)
     out_path.write_text(json_str, encoding="utf-8")
     print(
-        f"\n🎉 [Macro] เสร็จสิ้น: {len(out_commodities)}/{len(symbols)} รายการ -> {out_path}"
+        f"\n🎉 [Macro] เสร็จสิ้น: {len(out_commodities)}/{total_symbols} รายการ (ดึงสดสำเร็จ {successfully_fetched_count}) -> {out_path}"
     )
     print(f"   ขนาดไฟล์: {out_path.stat().st_size / 1024:.1f} KB")
 
