@@ -90,6 +90,68 @@ def build_growth_map() -> dict[str, dict]:
     return growth_map
 
 
+def build_fundamentals_map() -> dict[str, dict]:
+    """
+    อ่าน PE_Ratio และ ROE ราย ticker จาก daily_prices.csv
+    หาก PE เป็น NaN, null หรือ <= 0 (ขาดทุน) จะเก็บเป็น None (null ใน JSON)
+    หาก ROE เป็น NaN หรือ null จะเก็บเป็น None (null ใน JSON)
+    """
+    df = read_csv_safe(DAILY_PRICES_FILE)
+    if df is None or "Ticker" not in df.columns:
+        print("  ⚠️ WARNING: ไม่พบไฟล์ daily_prices.csv หรือคอลัมน์ Ticker — กำหนด PE_Ratio/ROE เป็น null")
+        return {}
+
+    fund_map = {}
+    valid_pe_count = 0
+
+    for _, row in df.iterrows():
+        ticker = row["Ticker"]
+        pe_val = row.get("PE_Ratio")
+        roe_val = row.get("ROE")
+
+        # PE Guard: ถ้าเป็น NaN, null หรือ <= 0 (ขาดทุน) ให้เป็น None
+        pe = None
+        if pd.notna(pe_val):
+            try:
+                pe_float = float(pe_val)
+                if pe_float > 0:
+                    pe = pe_float
+                    valid_pe_count += 1
+            except (ValueError, TypeError):
+                pe = None
+
+        # ROE Guard: ถ้าเป็น NaN หรือ null ให้เป็น None
+        roe = None
+        if pd.notna(roe_val):
+            try:
+                roe = float(roe_val)
+            except (ValueError, TypeError):
+                roe = None
+
+        fund_map[ticker] = {
+            "PE_Ratio": pe,
+            "ROE": roe,
+        }
+
+    if valid_pe_count == 0:
+        print("  ⚠️ WARNING: ไม่พบข้อมูล PE ที่มีค่า > 0 จาก daily_prices.csv เลย — PE_Ratio ทุกตัวจะเป็น null")
+
+    return fund_map
+
+
+def enrich_market_stage(records: list[dict], fund_map: dict[str, dict]) -> list[dict]:
+    """แนบ PE_Ratio และ ROE ต่อท้ายแต่ละ record ของ market_stage"""
+    enriched = []
+    for r in records:
+        ticker = r.get("Ticker")
+        fund = fund_map.get(ticker, {})
+        new_rec = dict(r)
+        new_rec["PE_Ratio"] = fund.get("PE_Ratio")
+        new_rec["ROE"] = fund.get("ROE")
+        enriched.append(new_rec)
+    return enriched
+
+
 def build_combined(individual: dict[str, list[dict]], growth_map: dict[str, dict]) -> list[dict]:
     """
     รวมผลทุก scan เป็นตารางเดียวต่อ 1 ticker (สำหรับหน้า Scanner 'ทั้งหมด')
@@ -207,6 +269,11 @@ def main():
     generated_at = datetime.now(timezone(timedelta(hours=7))).strftime("%Y-%m-%dT%H:%M:%S+07:00")
 
     individual = build_individual_jsons()
+
+    # แนบข้อมูล PE_Ratio และ ROE ลงใน market_stage
+    fund_map = build_fundamentals_map()
+    if "market_stage" in individual and individual["market_stage"]:
+        individual["market_stage"] = enrich_market_stage(individual["market_stage"], fund_map)
 
     for key, records in individual.items():
         out_path = OUTPUT_DIR / f"{key}.json"
