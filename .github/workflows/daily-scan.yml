@@ -231,6 +231,12 @@ jobs:
           # data_engine's fetch_topmover_ranking.py, same pattern as step 6.
           python -X utf8 scripts/compute_topmover_history.py || echo "compute_topmover_history failed"
 
+          # 9. Validate sector mapping (warning only)
+          python -X utf8 scripts/validate_sector_mapping.py || echo "validate_sector_mapping failed"
+
+          # 10. Calculate report card (gen report_card.json for /report-card page)
+          python -X utf8 scripts/calculate_report_card.py || echo "calculate_report_card failed"
+
       - name: Commit and Push to stockdesk
         id: push_stockdesk
         # safe_push.py handles the news.json two-writers race (auto-merges a
