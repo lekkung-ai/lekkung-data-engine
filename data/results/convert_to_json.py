@@ -15,6 +15,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 import pandas as pd
 import json
+import math
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import numpy as np
@@ -93,8 +94,8 @@ def build_growth_map() -> dict[str, dict]:
 def build_fundamentals_map() -> dict[str, dict]:
     """
     อ่าน PE_Ratio และ ROE ราย ticker จาก daily_prices.csv
-    หาก PE เป็น NaN, null หรือ <= 0 (ขาดทุน) จะเก็บเป็น None (null ใน JSON)
-    หาก ROE เป็น NaN หรือ null จะเก็บเป็น None (null ใน JSON)
+    หาก EPS <= 0, EPS เป็น None, PE เป็น NaN/null, <= 0 (ขาดทุน) หรือ inf/nan จะเก็บเป็น None (null ใน JSON)
+    หาก ROE เป็น NaN, null หรือ inf/nan จะเก็บเป็น None (null ใน JSON)
     """
     df = read_csv_safe(DAILY_PRICES_FILE)
     if df is None or "Ticker" not in df.columns:
@@ -108,23 +109,36 @@ def build_fundamentals_map() -> dict[str, dict]:
         ticker = row["Ticker"]
         pe_val = row.get("PE_Ratio")
         roe_val = row.get("ROE")
+        eps_val = row.get("EPS") if "EPS" in row else None
 
-        # PE Guard: ถ้าเป็น NaN, null หรือ <= 0 (ขาดทุน) ให้เป็น None
+        # EPS Guard: ถ้า EPS <= 0 หรือ EPS เป็น None/NaN/inf ให้ถือว่าไม่ผ่าน PE guard
+        eps_valid = True
+        if eps_val is not None and pd.notna(eps_val):
+            try:
+                eps_float = float(eps_val)
+                if eps_float <= 0 or not math.isfinite(eps_float):
+                    eps_valid = False
+            except (ValueError, TypeError):
+                eps_valid = False
+
+        # PE Guard: ถ้าเป็น NaN, null, <= 0 (ขาดทุน) หรือ inf/nan ให้เป็น None
         pe = None
-        if pd.notna(pe_val):
+        if eps_valid and pd.notna(pe_val):
             try:
                 pe_float = float(pe_val)
-                if pe_float > 0:
+                if pe_float > 0 and math.isfinite(pe_float):
                     pe = pe_float
                     valid_pe_count += 1
             except (ValueError, TypeError):
                 pe = None
 
-        # ROE Guard: ถ้าเป็น NaN หรือ null ให้เป็น None
+        # ROE Guard: ถ้าเป็น NaN, null หรือ inf/nan ให้เป็น None
         roe = None
         if pd.notna(roe_val):
             try:
-                roe = float(roe_val)
+                roe_float = float(roe_val)
+                if math.isfinite(roe_float):
+                    roe = roe_float
             except (ValueError, TypeError):
                 roe = None
 
@@ -140,14 +154,33 @@ def build_fundamentals_map() -> dict[str, dict]:
 
 
 def enrich_market_stage(records: list[dict], fund_map: dict[str, dict]) -> list[dict]:
-    """แนบ PE_Ratio และ ROE ต่อท้ายแต่ละ record ของ market_stage"""
+    """แนบ PE_Ratio และ ROE ต่อท้ายแต่ละ record ของ market_stage พร้อมตรวจสอบ inf/nan"""
     enriched = []
     for r in records:
         ticker = r.get("Ticker")
         fund = fund_map.get(ticker, {})
         new_rec = dict(r)
-        new_rec["PE_Ratio"] = fund.get("PE_Ratio")
-        new_rec["ROE"] = fund.get("ROE")
+
+        pe = fund.get("PE_Ratio")
+        if pe is not None:
+            try:
+                pe_float = float(pe)
+                if pe_float <= 0 or not math.isfinite(pe_float):
+                    pe = None
+            except (ValueError, TypeError):
+                pe = None
+
+        roe = fund.get("ROE")
+        if roe is not None:
+            try:
+                roe_float = float(roe)
+                if not math.isfinite(roe_float):
+                    roe = None
+            except (ValueError, TypeError):
+                roe = None
+
+        new_rec["PE_Ratio"] = pe
+        new_rec["ROE"] = roe
         enriched.append(new_rec)
     return enriched
 
@@ -249,7 +282,7 @@ def build_nvdr(output_dir: Path):
     }
     
     out_file = output_dir / "nvdr.json"
-    out_file.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    out_file.write_text(json.dumps(out, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     print(f"  ✓ nvdr.json: {len(df_today)} ticker (today), {len(agg_5d)} ticker (5d)")
 
 
@@ -277,11 +310,11 @@ def main():
 
     for key, records in individual.items():
         out_path = OUTPUT_DIR / f"{key}.json"
-        out_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps(records, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
     generated_at_manifest = {key: generated_at for key in individual.keys()}
     (OUTPUT_DIR / "generated_at.json").write_text(
-        json.dumps(generated_at_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(generated_at_manifest, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8"
     )
     print(f"  ✓ generated_at.json: {len(generated_at_manifest)} scan keys stamped {generated_at}")
 
@@ -293,7 +326,7 @@ def main():
         "generated_at": generated_at,
         "data": combined,
     }
-    combined_path.write_text(json.dumps(combined_out, ensure_ascii=False, indent=2), encoding="utf-8")
+    combined_path.write_text(json.dumps(combined_out, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     print(f"  ✓ combined.json: {len(combined)} ticker (ผ่านอย่างน้อย 1 scan)")
     
     print("\nกำลังประมวลผล NVDR...")
