@@ -1,12 +1,6 @@
 name: Daily Stock Data Engine
 
 on:
-  schedule:
-    # Primary runs triggered via cron-job.org or GitHub Actions schedules:
-    # 1. 18:11 ICT (11:11 UTC) Mon-Fri: Initial post-market close scan
-    # 2. 20:00 ICT (13:00 UTC) Mon-Fri: Evening wrap-up scan for late NVDR, SEC filings & news
-    - cron: '11 11 * * 1-5' # 18:11 ICT (UTC+7) Mon-Fri
-    - cron: '0 13 * * 1-5'  # 20:00 ICT (UTC+7) Mon-Fri
   workflow_dispatch: # Manual trigger, and the target of the external cron-job.org trigger
     inputs:
       force:
