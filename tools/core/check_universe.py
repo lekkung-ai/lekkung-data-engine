@@ -5,9 +5,10 @@ Fetches complete listed stocks (SET + mai) from SETTrade API (`https://www.settr
 Compares against the current universe (`sector_map.json`) and categorizes changes into groups:
 1. `new`: Real IPOs (new ticker, company name not matched to any delisted stock).
 2. `delisted`: Confirmed delisted stocks (missing from list AND confirmed delisted/404 via per-ticker profile check).
-3. `possible_delisted`: Tickers missing from main list but per-ticker profile still shows Listed (flagged for review, not deleted).
-4. `renamed`: Exact/Normalized company name match or `oldSymbols` match between old & new tickers ({ "old": ..., "new": ..., "company": ... }).
-5. `possible_rename`: Suspected rename due to partial company name similarity ({ "old": ..., "new": ..., "old_company": ..., "new_company": ..., "reason": ... }).
+3. `possible_delisted`: Tickers missing from main list but per-ticker profile still shows Listed.
+4. `renamed`: Verified permanent ticker symbol rename ({ "old": ..., "new": ..., "company": ... }).
+5. `temporary_symbol`: Temporary trading symbol during SP / restructuring (e.g. BANPU -> BANPUU) - MUST NOT remap history.
+6. `possible_rename`: Suspected rename due to partial company name similarity ({ "old": ..., "new": ..., "old_company": ..., "new_company": ..., "reason": ... }).
 
 Supports ignore list (`universe_ignore.json`) to exclude previously rejected tickers.
 Outputs idempotent `universe_changes.json` for consumption by the Dashboard /settings page.
@@ -46,15 +47,19 @@ SETTRADE_HEADERS = {
 }
 
 
-def fetch_settrade_universe() -> dict:
-    """Fetch full SET + mai stock universe from SETTrade API."""
+def get_authenticated_session() -> requests.Session:
+    """Initialize a requests Session with SETTrade session cookies."""
     session = requests.Session()
     session.headers.update(SETTRADE_HEADERS)
     try:
         session.get("https://www.settrade.com/th/home", timeout=10)
     except Exception as e:
         print(f"[check-universe] Warning: SETTrade home fetch failed: {e}")
+    return session
 
+
+def fetch_settrade_universe(session: requests.Session) -> dict:
+    """Fetch full SET + mai stock universe from SETTrade API."""
     res = session.get(SETTRADE_STOCK_LIST_URL, timeout=15)
     res.raise_for_status()
     data = res.json()
@@ -78,11 +83,11 @@ def fetch_settrade_universe() -> dict:
     return result
 
 
-def fetch_ticker_profile_status(ticker: str) -> tuple[int, str, str]:
-    """Fetch per-ticker profile to strictly verify delisted vs listed status."""
+def fetch_ticker_profile_status(session: requests.Session, ticker: str) -> tuple[int, str, str]:
+    """Fetch per-ticker profile using authenticated session to strictly verify status."""
     url = f"https://www.settrade.com/api/set/stock/{ticker}/profile"
     try:
-        res = requests.get(url, headers=SETTRADE_HEADERS, timeout=5)
+        res = session.get(url, timeout=5)
         if res.status_code == 200:
             data = res.json()
             status = data.get("status") or "Listed"
@@ -134,12 +139,13 @@ def load_ignore_list(path: str) -> set:
 
 
 def detect_with_custom_candidates(
+    session: requests.Session,
     live_universe: dict,
     current_mapped: dict,
     ignored_tickers: set,
     custom_old_companies: dict = None
 ) -> dict:
-    """Core detection engine supporting custom company name mapping & strict per-ticker delisted verification."""
+    """Core detection engine with strict delisted verification & SP temporary symbol guard."""
     custom_old_companies = custom_old_companies or {}
     live_tickers = set(live_universe.keys())
     current_tickers = set(current_mapped.keys())
@@ -153,11 +159,12 @@ def detect_with_custom_candidates(
     unmapped_live = {k: live_universe[k] for k in new_candidate_keys}
 
     renamed = []
+    temporary_symbols = []
     possible_rename = []
     resolved_new = set()
     resolved_delisted = set()
 
-    # Pass 1: SETTrade oldSymbols match or Exact Normalized Company Name match
+    # Pass 1: Rename Detection & SP Temporary Symbol Guard
     for old_t in delisted_candidate_keys:
         if old_t in resolved_delisted:
             continue
@@ -174,16 +181,36 @@ def detect_with_custom_candidates(
             new_company = new_info.get("name_th") or new_info.get("name_en") or new_t
             norm_new = normalize_company_name(new_company)
 
+            # Check if matching oldSymbols or exact normalized company name
             if old_t.upper() in old_syms or (norm_old and norm_new and norm_old == norm_new):
-                renamed.append({
-                    "old": old_t,
-                    "new": new_t,
-                    "company": new_company,
-                    "reason": "Official rename match"
-                })
-                resolved_delisted.add(old_t)
-                resolved_new.add(new_t)
-                break
+                # Verify old_t trading status via per-ticker profile check
+                code, status, comp_name = fetch_ticker_profile_status(session, old_t)
+                is_old_still_active = (code == 200 and status.lower() != "delisted")
+
+                if is_old_still_active:
+                    # Old symbol is still active/suspended in SET (e.g. BANPU during SP -> BANPUU)
+                    # This is a TEMPORARY trading symbol, NOT a permanent rename!
+                    temporary_symbols.append({
+                        "old": old_t,
+                        "new": new_t,
+                        "company": new_company,
+                        "status": status,
+                        "reason": f"ชื่อชั่วคราวช่วง SP/พักเทรด ({status}) - ห้าม remap ประวัติเดิม"
+                    })
+                    resolved_delisted.add(old_t)
+                    resolved_new.add(new_t)
+                    break
+                else:
+                    # Old symbol profile is 404 or Delisted -> Permanent Rename
+                    renamed.append({
+                        "old": old_t,
+                        "new": new_t,
+                        "company": new_company,
+                        "reason": "Official permanent rename match"
+                    })
+                    resolved_delisted.add(old_t)
+                    resolved_new.add(new_t)
+                    break
 
     # Pass 2: Fuzzy company name match (possible_rename)
     for old_t in delisted_candidate_keys:
@@ -233,7 +260,7 @@ def detect_with_custom_candidates(
     for old_t in delisted_candidate_keys:
         if old_t in resolved_delisted:
             continue
-        code, profile_status, comp_name = fetch_ticker_profile_status(old_t)
+        code, profile_status, comp_name = fetch_ticker_profile_status(session, old_t)
         company = custom_old_companies.get(old_t) or comp_name or old_t
 
         if code == 404 or profile_status.lower() == "delisted":
@@ -249,7 +276,7 @@ def detect_with_custom_candidates(
                 "company_name": company,
                 "market": "SET",
                 "status": profile_status,
-                "reason": "Missing from full list but profile still active (transient drop suspect)"
+                "reason": f"Missing from full list but profile still active ({profile_status})"
             })
 
     now_iso = datetime.now(BANGKOK_TZ).isoformat()
@@ -262,12 +289,14 @@ def detect_with_custom_candidates(
             "delisted_count": len(final_delisted),
             "possible_delisted_count": len(possible_delisted),
             "renamed_count": len(renamed),
+            "temporary_symbols_count": len(temporary_symbols),
             "possible_rename_count": len(possible_rename),
         },
         "new": final_new,
         "delisted": final_delisted,
         "possible_delisted": possible_delisted,
         "renamed": renamed,
+        "temporary_symbols": temporary_symbols,
         "possible_rename": possible_rename,
     }
 
@@ -286,8 +315,10 @@ def main():
         print(f"[check-universe] SKIP - today ({today.strftime('%A')}) is not Monday. Use --force to run.")
         return
 
+    session = get_authenticated_session()
+
     print("[check-universe] Fetching live universe from SETTrade API...")
-    live_universe = fetch_settrade_universe()
+    live_universe = fetch_settrade_universe(session)
     print(f"[check-universe] Live SETTrade universe fetched: {len(live_universe)} common stocks (SET + mai)")
 
     _, current_mapped = load_sector_map(args.sector_map)
@@ -297,7 +328,7 @@ def main():
     if ignored_tickers:
         print(f"[check-universe] Ignored tickers loaded: {len(ignored_tickers)}")
 
-    changes = detect_with_custom_candidates(live_universe, current_mapped, ignored_tickers)
+    changes = detect_with_custom_candidates(session, live_universe, current_mapped, ignored_tickers)
 
     print("\n" + "=" * 50)
     print("📊 UNIVERSE DRIFT SUMMARY")
@@ -308,6 +339,7 @@ def main():
     print(f"Confirmed Delisted (delisted): {changes['summary']['delisted_count']}")
     print(f"Suspected Delisted (review):   {changes['summary']['possible_delisted_count']}")
     print(f"Renamed Tickers (renamed):     {changes['summary']['renamed_count']}")
+    print(f"Temporary Symbols (SP guard):  {changes['summary']['temporary_symbols_count']}")
     print(f"Possible Renames (review):     {changes['summary']['possible_rename_count']}")
     print("=" * 50)
 
