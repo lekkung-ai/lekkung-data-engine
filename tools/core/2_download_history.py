@@ -512,13 +512,12 @@ def download_history_and_build_snapshot() -> None:
                 df_daily["NetProfit_Growth_QoQY"], errors="coerce"
             ).round(2)
 
-        # 🛡️ DROP GUARD: Abort if SETTrade returned 0 responses across all tickers
-        if len(settrade_dict) == 0:
+        # 🛡️ SOFT GUARD: SETTrade ล่มทั้ง batch → เตือน + ข้าม PE update (คงค่าเดิมจาก merge-guard) แต่ยังเขียนราคา
+        if len(settrade_dict) == 0 and len(valid_tickers) > 0:
             print(
-                f"\n🚨 [Phase 2.5] ERROR: SETTrade returned 0 responses across all {len(valid_tickers)} tickers. "
-                f"Aborting without overwriting {DAILY_FILE} to protect production data!"
+                f"\n⚠️ [Phase 2.5] WARNING: SETTrade returned 0 responses across all {len(valid_tickers)} tickers. "
+                f"Keeping existing PE/PBV (TradingView fallback / previous values). Price data will still be written normally."
             )
-            sys.exit(1)
 
         # 🎯 เซฟไฟล์ Master Snapshot ลงโฟลเดอร์ตาม config
         df_daily.to_csv(DAILY_FILE, index=False, encoding="utf-8-sig")
