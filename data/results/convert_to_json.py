@@ -93,13 +93,14 @@ def build_growth_map() -> dict[str, dict]:
 
 def build_fundamentals_map() -> dict[str, dict]:
     """
-    อ่าน PE_Ratio และ ROE ราย ticker จาก daily_prices.csv
+    อ่าน PE_Ratio, ROE และ PBV ราย ticker จาก daily_prices.csv
     หาก EPS <= 0, EPS เป็น None, PE เป็น NaN/null, <= 0 (ขาดทุน) หรือ inf/nan จะเก็บเป็น None (null ใน JSON)
     หาก ROE เป็น NaN, null หรือ inf/nan จะเก็บเป็น None (null ใน JSON)
+    หาก PBV เป็น NaN, null, <= 0 หรือ inf/nan จะเก็บเป็น None (null ใน JSON)
     """
     df = read_csv_safe(DAILY_PRICES_FILE)
     if df is None or "Ticker" not in df.columns:
-        print("  ⚠️ WARNING: ไม่พบไฟล์ daily_prices.csv หรือคอลัมน์ Ticker — กำหนด PE_Ratio/ROE เป็น null")
+        print("  ⚠️ WARNING: ไม่พบไฟล์ daily_prices.csv หรือคอลัมน์ Ticker — กำหนด PE_Ratio/ROE/PBV เป็น null")
         return {}
 
     fund_map = {}
@@ -109,6 +110,7 @@ def build_fundamentals_map() -> dict[str, dict]:
         ticker = row["Ticker"]
         pe_val = row.get("PE_Ratio")
         roe_val = row.get("ROE")
+        pbv_val = row.get("PBV") if "PBV" in row else None
         eps_val = row.get("EPS") if "EPS" in row else None
 
         # EPS Guard: ถ้า EPS <= 0 หรือ EPS เป็น None/NaN/inf ให้ถือว่าไม่ผ่าน PE guard
@@ -142,9 +144,20 @@ def build_fundamentals_map() -> dict[str, dict]:
             except (ValueError, TypeError):
                 roe = None
 
+        # PBV Guard: ถ้าเป็น NaN, null, <= 0 หรือ inf/nan ให้เป็น None
+        pbv = None
+        if pd.notna(pbv_val):
+            try:
+                pbv_float = float(pbv_val)
+                if pbv_float > 0 and math.isfinite(pbv_float):
+                    pbv = pbv_float
+            except (ValueError, TypeError):
+                pbv = None
+
         fund_map[ticker] = {
             "PE_Ratio": pe,
             "ROE": roe,
+            "PBV": pbv,
         }
 
     if valid_pe_count == 0:
@@ -154,7 +167,7 @@ def build_fundamentals_map() -> dict[str, dict]:
 
 
 def enrich_market_stage(records: list[dict], fund_map: dict[str, dict]) -> list[dict]:
-    """แนบ PE_Ratio และ ROE ต่อท้ายแต่ละ record ของ market_stage พร้อมตรวจสอบ inf/nan"""
+    """แนบ PE_Ratio, ROE และ PBV ต่อท้ายแต่ละ record ของ market_stage พร้อมตรวจสอบ inf/nan"""
     enriched = []
     for r in records:
         ticker = r.get("Ticker")
@@ -179,8 +192,18 @@ def enrich_market_stage(records: list[dict], fund_map: dict[str, dict]) -> list[
             except (ValueError, TypeError):
                 roe = None
 
+        pbv = fund.get("PBV")
+        if pbv is not None:
+            try:
+                pbv_float = float(pbv)
+                if pbv_float <= 0 or not math.isfinite(pbv_float):
+                    pbv = None
+            except (ValueError, TypeError):
+                pbv = None
+
         new_rec["PE_Ratio"] = pe
         new_rec["ROE"] = roe
+        new_rec["PBV"] = pbv
         enriched.append(new_rec)
     return enriched
 
