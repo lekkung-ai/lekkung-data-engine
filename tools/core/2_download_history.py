@@ -17,6 +17,11 @@ if hasattr(sys.stderr, "reconfigure"):
 import pandas as pd
 import yfinance as yf
 
+try:
+    from tools.core.settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
+except ImportError:
+    from settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
+
 warnings.filterwarnings("ignore")
 
 
@@ -423,7 +428,10 @@ def download_history_and_build_snapshot() -> None:
         t = row["Ticker"]
         row.update(fundamental_data.get(t, {}))
 
-    print(f"\n🔎 [Phase 2.5/2] กำลังดึงข้อมูล TradingView Fundamentals เสริมความแม่นยำ...")
+    print(f"\n🔎 [Phase 2.5/2] กำลังดึงข้อมูล SETTrade & TradingView Fundamentals เสริมความแม่นยำ...")
+
+    # 1. TradingView Fallback Batch Fetch
+    tv_dict = {}
     try:
         import requests
         tv_payload = {
@@ -437,20 +445,54 @@ def download_history_and_build_snapshot() -> None:
         if res.status_code == 200:
             tv_data = res.json().get("data", [])
             tv_dict = {item["d"][0]: item["d"] for item in tv_data if len(item.get("d", [])) >= 5}
-            for row in daily_snapshot:
-                t = row["Ticker"]
-                if t in tv_dict:
-                    d = tv_dict[t]
-                    if d[1] is not None: row["PE_Ratio"] = d[1]
-                    if d[2] is not None: row["EPS"] = d[2]
-                    if d[3] is not None: row["ROE"] = d[3] / 100.0
-                    if d[4] is not None: row["Market_Cap"] = d[4]
     except Exception as e:
-        print(f"⚠️ Error fetching TradingView data: {e}")
+        print(f"⚠️ Error fetching TradingView fallback data: {e}")
+
+    # 2. SETTrade Primary Fetch via ThreadPoolExecutor (5 workers)
+    settrade_dict = {}
+    try:
+        sess = get_authenticated_session()
+        def _fetch_st(t):
+            return t, fetch_settrade_fundamentals(sess, t)
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(_fetch_st, t) for t in valid_tickers]
+            for future in as_completed(futures):
+                t, sf = future.result()
+                if sf is not None:
+                    settrade_dict[t] = sf
+    except Exception as e:
+        print(f"⚠️ Error in SETTrade parallel fetch: {e}")
+
+    # 3. Chain Priority Loop (SETTrade > TradingView > Yahoo/Keep original)
+    for row in daily_snapshot:
+        t = row["Ticker"]
+        sf = settrade_dict.get(t)
+        tv = tv_dict.get(t)
+
+        tv_pe = tv[1] if tv and len(tv) > 1 and tv[1] is not None else None
+        row["PE_Ratio_tv"] = tv_pe
+
+        # PE: SETTrade primary > TradingView fallback > Yahoo/original
+        if sf and sf.get("pe") is not None:
+            row["PE_Ratio"] = sf["pe"]
+        elif tv_pe is not None:
+            row["PE_Ratio"] = tv_pe
+        # else: keep original row["PE_Ratio"] (merge-guard)
+
+        # PBV: SETTrade primary
+        if sf and sf.get("pbv") is not None:
+            row["PBV"] = sf["pbv"]
+
+        # EPS / ROE / Market_Cap: TradingView original fields
+        if tv:
+            if len(tv) > 2 and tv[2] is not None: row["EPS"] = tv[2]
+            if len(tv) > 3 and tv[3] is not None: row["ROE"] = tv[3] / 100.0
+            if len(tv) > 4 and tv[4] is not None: row["Market_Cap"] = tv[4]
 
     if daily_snapshot:
         df_daily = pd.DataFrame(daily_snapshot)
-        for col in ["Close", "Change_Pct", "PE_Ratio", "EPS"]:
+        for col in ["Close", "Change_Pct", "PE_Ratio", "PE_Ratio_tv", "PBV", "EPS"]:
             if col in df_daily.columns:
                 df_daily[col] = pd.to_numeric(df_daily[col], errors="coerce").round(2)
         if "ROE" in df_daily.columns:
@@ -469,6 +511,14 @@ def download_history_and_build_snapshot() -> None:
             df_daily["NetProfit_Growth_QoQY"] = pd.to_numeric(
                 df_daily["NetProfit_Growth_QoQY"], errors="coerce"
             ).round(2)
+
+        # 🛡️ DROP GUARD: Abort if SETTrade returned 0 responses across all tickers
+        if len(settrade_dict) == 0:
+            print(
+                f"\n🚨 [Phase 2.5] ERROR: SETTrade returned 0 responses across all {len(valid_tickers)} tickers. "
+                f"Aborting without overwriting {DAILY_FILE} to protect production data!"
+            )
+            sys.exit(1)
 
         # 🎯 เซฟไฟล์ Master Snapshot ลงโฟลเดอร์ตาม config
         df_daily.to_csv(DAILY_FILE, index=False, encoding="utf-8-sig")
