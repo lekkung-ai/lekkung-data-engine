@@ -27,6 +27,11 @@ if hasattr(sys.stdout, "reconfigure"):
 
 import requests
 
+try:
+    from tools.core.settrade_helper import get_authenticated_session
+except ImportError:
+    from settrade_helper import get_authenticated_session
+
 BANGKOK_TZ = timezone(timedelta(hours=7))
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -41,21 +46,6 @@ DEFAULT_OUTPUT_PATH = os.path.normpath(
 )
 
 SETTRADE_STOCK_LIST_URL = "https://www.settrade.com/api/set/stock/list"
-SETTRADE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://www.settrade.com/th/home",
-}
-
-
-def get_authenticated_session() -> requests.Session:
-    """Initialize a requests Session with SETTrade session cookies."""
-    session = requests.Session()
-    session.headers.update(SETTRADE_HEADERS)
-    try:
-        session.get("https://www.settrade.com/th/home", timeout=10)
-    except Exception as e:
-        print(f"[check-universe] Warning: SETTrade home fetch failed: {e}")
-    return session
 
 
 def fetch_settrade_universe(session: requests.Session) -> dict:
