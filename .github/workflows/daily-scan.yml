@@ -228,6 +228,9 @@ jobs:
           # 9. Validate sector mapping (warning only)
           python -X utf8 scripts/validate_sector_mapping.py || echo "validate_sector_mapping failed"
 
+          # 10. Calculate scan report card
+          python -X utf8 scripts/calculate_report_card.py || echo "calculate_report_card failed"
+
       - name: Commit and Push to stockdesk
         id: push_stockdesk
         # safe_push.py handles the news.json two-writers race (auto-merges a
