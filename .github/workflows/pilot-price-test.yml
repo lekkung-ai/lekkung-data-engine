@@ -1,0 +1,13 @@
+name: Pilot Price Source Test
+on:
+  workflow_dispatch: {}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test Yahoo + SETTrade from CI
+        run: python scripts/pilot_price_source.py
