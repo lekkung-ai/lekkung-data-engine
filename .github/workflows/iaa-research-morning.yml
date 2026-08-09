@@ -75,6 +75,12 @@ jobs:
           cd stockdesk_repo
           python -X utf8 scripts/extract_reason.py
 
+      - name: Enrich earnings with PEAD (gap & drift)
+        continue-on-error: true
+        run: |
+          cd stockdesk_repo
+          python -X utf8 scripts/enrich_earnings_pead.py
+
       - name: Commit and push earnings feed
         continue-on-error: true
         run: |
