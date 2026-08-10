@@ -231,6 +231,9 @@ jobs:
           # 10. Calculate scan report card
           python -X utf8 scripts/calculate_report_card.py || echo "calculate_report_card failed"
 
+          # 11. Backfill Sector RS history (time-series Sector & Subsector RS for RRG)
+          python -X utf8 scripts/backfill_sector_rs_history.py || echo "backfill_sector_rs_history failed"
+
       - name: Commit and Push to stockdesk
         id: push_stockdesk
         # safe_push.py handles the news.json two-writers race (auto-merges a
