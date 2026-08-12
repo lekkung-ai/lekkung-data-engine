@@ -15,10 +15,11 @@ import requests
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import SYMBOLS_FILE, DATA_DIR
 
-# Paths for sector_map.json and universe_ignore.json (relative to AI Agent root)
+# Paths for sector_map.json (stockdesk) and universe_ignore.json (data_engine)
 ROOT_DIR = Path(__file__).resolve().parents[4]
 SECTOR_MAP_PATH = ROOT_DIR / "Claude" / "dashboard" / "stockdesk" / "data" / "scans" / "sector_map.json"
-IGNORE_LIST_PATH = ROOT_DIR / "Claude" / "dashboard" / "stockdesk" / "data" / "scans" / "universe_ignore.json"
+REPO_ROOT = Path(__file__).resolve().parents[2]  # tools/core -> data_engine root
+IGNORE_LIST_PATH = REPO_ROOT / "data" / "scans" / "universe_ignore.json"
 
 # TradingView's live scanner is re-queried every run, so its classification
 # can blip for a single run (temporary trading suspension, reclassification

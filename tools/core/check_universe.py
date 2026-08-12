@@ -39,7 +39,7 @@ DEFAULT_SECTOR_MAP_PATH = os.path.normpath(
     os.path.join(SCRIPT_DIR, "..", "..", "..", "..", "Claude", "dashboard", "stockdesk", "data", "scans", "sector_map.json")
 )
 DEFAULT_IGNORE_PATH = os.path.normpath(
-    os.path.join(SCRIPT_DIR, "..", "..", "..", "..", "Claude", "dashboard", "stockdesk", "data", "scans", "universe_ignore.json")
+    os.path.join(SCRIPT_DIR, "..", "..", "data", "scans", "universe_ignore.json")
 )
 DEFAULT_OUTPUT_PATH = os.path.normpath(
     os.path.join(SCRIPT_DIR, "..", "..", "..", "..", "Claude", "dashboard", "stockdesk", "data", "scans", "universe_changes.json")
