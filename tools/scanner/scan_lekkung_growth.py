@@ -134,7 +134,10 @@ def scan_lekkung_growth():
 
             if cond_avg_val and cond_ema_10 and cond_ema_trend:
                 selected_tickers.append(ticker)
-                market_tech_metrics[ticker] = latest["Close"]
+                market_tech_metrics[ticker] = {
+                    "Close": float(latest["Close"]),
+                    "EMA_10": round(float(latest["EMA_10"]), 2),
+                }
 
         except Exception:
             continue
@@ -258,7 +261,8 @@ def scan_lekkung_growth():
     final_scan = df_financial_data[condition].copy()
 
     if not final_scan.empty and market_tech_metrics:
-        final_scan["Close"] = final_scan["Ticker"].map(market_tech_metrics)
+        final_scan["Close"] = final_scan["Ticker"].map(lambda t: market_tech_metrics.get(t, {}).get("Close"))
+        final_scan["EMA_10"] = final_scan["Ticker"].map(lambda t: market_tech_metrics.get(t, {}).get("EMA_10"))
 
     if not final_scan.empty:
         final_scan = final_scan.sort_values(by="ADTV_MB", ascending=False)
