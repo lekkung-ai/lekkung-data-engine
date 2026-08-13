@@ -247,9 +247,13 @@ def main():
     close_df = pd.concat(closes, axis=1).sort_index()
     close_df = close_df.reindex(set_df.index)  # บังคับ align วันที่ให้ตรงกับ SET Index ทุกกราฟ
 
+    valid_rows = close_df.notna().any(axis=1)
+    close_df = close_df[valid_rows]
+    set_df = set_df.loc[close_df.index]
+
     breadth_df = compute_breadth_matrix(close_df)
 
-    market_stage = classify_market_stage(breadth_df, marker)
+    market_stage = classify_market_stage(breadth_df, set_df['marker'].tolist())
     print(f"  ✓ market_stage: {market_stage['stage']} (DD 25d: {market_stage['dd_count_25d']}, "
           f"%>MA50: {market_stage['pct_above_ma50_today']})")
 
