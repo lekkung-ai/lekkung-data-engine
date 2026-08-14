@@ -71,6 +71,8 @@ def load_ticker_close(file_path: Path) -> pd.Series | None:
 def load_universe_closes() -> dict[str, pd.Series]:
     closes: dict[str, pd.Series] = {}
     for file_path in sorted(HISTORY_DIR.glob("*.csv")):
+        if file_path.stem == "SET_INDEX":   # Z2: ข้าม SET index ไม่ใช่หุ้น
+            continue
         try:
             series = load_ticker_close(file_path)
         except Exception:
@@ -83,6 +85,24 @@ def load_universe_closes() -> dict[str, pd.Series]:
 # ─── SET Index (^SET.BK ไม่เคยถูกเก็บใน data/history ของ pipeline นี้มาก่อน ต้องดึงสด) ──
 
 def fetch_set_index() -> pd.DataFrame:
+    # Z2: อ่าน SET_INDEX.csv (จาก 2_download_history) ก่อน — เลี่ยง yfinance rate-limit สด
+    set_csv = HISTORY_DIR / "SET_INDEX.csv"
+    if set_csv.exists():
+        try:
+            df = pd.read_csv(set_csv)
+            df = df.rename(columns={df.columns[0]: "Date"})
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            df = df.dropna(subset=["Date", "Close"]).set_index("Date").sort_index()
+            # ต้องมี columns ที่ downstream ใช้: Open/High/Low/Close/Volume
+            need = {"Open", "High", "Low", "Close", "Volume"}
+            if need.issubset(df.columns) and len(df) >= 200:
+                print(f"  ✓ [Breadth] SET Index จาก SET_INDEX.csv: {len(df)} แท่ง")
+                return df[["Open", "High", "Low", "Close", "Volume"]]
+            print(f"  ⚠️ [Breadth] SET_INDEX.csv ไม่ครบ (rows={len(df)}, cols ขาด) → fallback yfinance")
+        except Exception as e:
+            print(f"  ⚠️ [Breadth] อ่าน SET_INDEX.csv ไม่ได้: {e} → fallback yfinance")
+
+    # fallback: yfinance retry (โค้ดเดิม คงไว้ทั้งหมด)
     last_err = None
     for attempt in range(3):
         try:
