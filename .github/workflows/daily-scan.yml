@@ -206,7 +206,7 @@ jobs:
           python scripts/save_research.py || echo "save_research failed"
 
           # 4. Save SEC 59-2 / 246
-          python -X utf8 scripts/save_sec_reports.py || echo "save_sec_reports failed"
+          python -X utf8 scripts/save_sec_reports.py "$DATESTAMP" || echo "save_sec_reports failed"
 
           # 5. Compute scan days
           python -X utf8 scripts/compute_scan_days.py || echo "compute_scan_days failed"
