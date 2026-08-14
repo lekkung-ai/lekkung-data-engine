@@ -309,6 +309,36 @@ def load_stale_fallback(ticker: str, today: date) -> Optional[Dict[str, Any]]:
     return row
 
 
+def download_set_index() -> None:
+    """ดึง ^SET.BK แยกต่างหาก เขียน SET_INDEX.csv (สำหรับ breadth)
+    ไม่เข้า daily_snapshot — เป็น index ไม่ใช่หุ้น downstream scanner ไม่ควรเห็น"""
+    import time
+    for attempt in range(3):
+        try:
+            df = yf.download("^SET.BK", period="3y", interval="1d",
+                             auto_adjust=True, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [c[0] for c in df.columns]
+            df = df.dropna(subset=["Close"]).sort_index()
+            if len(df) >= 200:   # ⚠️ ต้องได้ครบ ไม่ใช่แค่ 1 แท่ง (กัน throttle partial)
+                # เพิ่ม SMA/52W ให้ format ตรงกับหุ้น (breadth อ่าน pattern เดียวกัน)
+                df["SMA_50"] = df["Close"].rolling(50).mean().round(2)
+                df["SMA_150"] = df["Close"].rolling(150).mean().round(2)
+                df["SMA_200"] = df["Close"].rolling(200).mean().round(2)
+                df["52W_High"] = df["High"].rolling(252).max().round(2)
+                df["52W_Low"] = df["Low"].rolling(252).min().round(2)
+                save_file = HISTORY_DIR / "SET_INDEX.csv"
+                df.to_csv(save_file)
+                print(f"  ✅ SET_INDEX.csv: {len(df)} แท่ง ({df.index[0].date()} - {df.index[-1].date()})")
+                return
+            print(f"  ⏳ [SET_INDEX] ได้แค่ {len(df)} แท่ง (< 200) ครั้งที่ {attempt+1}/3 — รอ retry")
+        except Exception as e:
+            print(f"  ⏳ [SET_INDEX] ครั้งที่ {attempt+1}/3 fail: {e}")
+        if attempt < 2:
+            time.sleep(3 * (2 ** attempt))   # 3s, 6s
+    print(f"  ⚠️ [SET_INDEX] ดึงไม่ครบหลัง retry 3 ครั้ง — preserve SET_INDEX.csv เดิม (ถ้ามี)")
+
+
 def download_history_and_build_snapshot() -> None:
     if not SYMBOLS_FILE.exists():
         print(f"❌ ไม่พบไฟล์ '{SYMBOLS_FILE.name}' กรุณารัน Step 1 ก่อนครับ")
@@ -316,6 +346,9 @@ def download_history_and_build_snapshot() -> None:
 
     df_symbols = pd.read_csv(SYMBOLS_FILE)
     tickers = df_symbols["Ticker"].tolist()
+
+    print("📈 กำลังดึง SET Index (^SET.BK) ก่อน — yfinance ยังไม่โดน rate-limit จากหุ้น...")
+    download_set_index()
 
     print(
         f"📥 [Phase 1/2] กำลังดาวน์โหลดข้อมูลย้อนหลัง 2 ปี สำหรับหุ้น {len(tickers)} ตัว..."
