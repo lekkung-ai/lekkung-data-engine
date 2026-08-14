@@ -17,6 +17,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import json
+import time
 from datetime import datetime, timezone, timedelta
 
 import pandas as pd
@@ -82,17 +83,30 @@ def load_universe_closes() -> dict[str, pd.Series]:
 # ─── SET Index (^SET.BK ไม่เคยถูกเก็บใน data/history ของ pipeline นี้มาก่อน ต้องดึงสด) ──
 
 def fetch_set_index() -> pd.DataFrame:
-    df = yf.download(
-        SET_INDEX_YF_SYMBOL,
-        period=SET_INDEX_FETCH_PERIOD,
-        interval="1d",
-        auto_adjust=True,
-        progress=False,
-    )
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [c[0] for c in df.columns]
-    df = df.dropna(subset=["Close"]).sort_index()
-    return df
+    last_err = None
+    for attempt in range(3):
+        try:
+            df = yf.download(
+                SET_INDEX_YF_SYMBOL,
+                period=SET_INDEX_FETCH_PERIOD,
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+            )
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [c[0] for c in df.columns]
+            df = df.dropna(subset=["Close"]).sort_index()
+            if not df.empty:
+                return df
+            last_err = "empty result"
+        except Exception as e:
+            last_err = str(e)
+        if attempt < 2:
+            wait = 3 * (2 ** attempt)   # 3s, 6s, (12s ถ้ามี attempt 3)
+            print(f"  ⏳ [Breadth] SET Index ดึงไม่ได้ (ครั้งที่ {attempt+1}/3): {last_err} — รอ {wait}s แล้วลองใหม่")
+            time.sleep(wait)
+    print(f"  ❌ [Breadth] SET Index ดึงไม่สำเร็จหลัง retry 3 ครั้ง: {last_err}")
+    return pd.DataFrame()
 
 
 FTD_DD_RULE_TEXT = (
