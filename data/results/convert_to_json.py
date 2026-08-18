@@ -45,6 +45,11 @@ FILES = {
 # selective scan (sepa/kell/breakout/ppbp/oneil/lekkung) ว่างได้ตามตลาด — ไม่อยู่ในนี้
 UNIVERSE_SCANS = {"market_stage", "stage_all", "rs_ranking", "weinstein"}
 MIN_UNIVERSE_ROWS = 500
+# combined.json พึ่ง universe scan เหล่านี้เป็นแกน (market_stage→stage/combo,
+# rs_ranking→rs_score/sort, weinstein→flag/combo). ถ้าตัวใดถูก drop แล้วยัง
+# เขียน combined ต่อ = RS null / combo เพี้ยน / stage null ทั้งกระดาน หลุด Vercel
+# → skip combined ถ้าตัวใดตัวหนึ่งหาย (คง combined.json เดิม)
+COMBINED_DEPS = {"market_stage", "rs_ranking", "weinstein"}
 
 # หมายเหตุ: ไฟล์ต่อไปนี้ "พักไว้ก่อน" ไม่ใช้ในรอบนี้
 #   - wyckoff_stages.csv           -> logic คนละแบบกับ pine_stages, เก็บไว้เผื่ออนาคตแต่ไม่ใช้เป็น stage หลัก
@@ -359,8 +364,9 @@ def main():
     # combined พึ่ง market_stage เป็นแกน (stage/is_uptrend/combo_score) — ถ้า stage ถูก drop
     # แล้วยังเขียน combined ต่อ = universe หด + stage=null ทั้งกระดาน + combo_score เพี้ยน หลุดไป Vercel
     # → ถ้า market_stage ไม่ผ่าน guard รอบนี้ ให้ skip combined ด้วย (คง combined.json เดิม)
-    if "market_stage" not in individual:
-        print("  ❌ DROP GUARD: market_stage ถูก drop รอบนี้ — ข้ามเขียน combined.json (กัน silent corruption) คงไฟล์เดิม")
+    missing_deps = [k for k in COMBINED_DEPS if k not in individual]
+    if missing_deps:
+        print(f"  ❌ DROP GUARD: combined dep ถูก drop {missing_deps} — ข้ามเขียน combined.json (กัน silent corruption: RS null / combo เพี้ยน / stage null) คงไฟล์เดิม")
     else:
         print("\nกำลังรวมข้อมูลทุก scan เข้าตารางเดียว (combined.json)...")
         growth_map = build_growth_map()
