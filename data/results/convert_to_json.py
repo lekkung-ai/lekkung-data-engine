@@ -39,6 +39,13 @@ FILES = {
     "weinstein": "weinstein_stages_result.csv",
 }
 
+# Drop Guard — universe-wide scan ต้องคลุมทั้งตลาด (~850-880 ตัว)
+# ถ้า CSV หาย/rows หล่นต่ำผิดปกติ = scanner ล่ม (ไม่ใช่ตลาดไม่มีหุ้นเข้า)
+# → ไม่เขียน JSON รอบนี้ ปล่อยไฟล์ committed เดิมใน stockdesk ยืน (cp ไม่มี source = ไม่ทับ)
+# selective scan (sepa/kell/breakout/ppbp/oneil/lekkung) ว่างได้ตามตลาด — ไม่อยู่ในนี้
+UNIVERSE_SCANS = {"market_stage", "stage_all", "rs_ranking", "weinstein"}
+MIN_UNIVERSE_ROWS = 500
+
 # หมายเหตุ: ไฟล์ต่อไปนี้ "พักไว้ก่อน" ไม่ใช้ในรอบนี้
 #   - wyckoff_stages.csv           -> logic คนละแบบกับ pine_stages, เก็บไว้เผื่ออนาคตแต่ไม่ใช้เป็น stage หลัก
 #   - sepa_stage2_combo.csv        -> เป็นแค่ subset ของ sepa ∩ stage2 คำนวณเองได้จากไฟล์อื่น
@@ -61,8 +68,16 @@ def build_individual_jsons() -> dict[str, list[dict]]:
     results = {}
     for key, filename in FILES.items():
         df = read_csv_safe(INPUT_DIR / filename)
+        row_count = 0 if df is None else len(df)
+
+        # Drop Guard: universe scan หาย/น้อยผิดปกติ = ล่ม → ไม่ใส่ผลรอบนี้ (คงไฟล์เดิม)
+        if key in UNIVERSE_SCANS and row_count < MIN_UNIVERSE_ROWS:
+            print(f"  ❌ DROP GUARD: {filename} rows={row_count} < {MIN_UNIVERSE_ROWS} "
+                  f"(universe scan ล่ม?) — ข้าม ไม่เขียน {key}.json คงไฟล์เดิม")
+            continue  # ไม่ใส่ใน results → main ไม่เขียนไฟล์ → cp ไม่ทับ committed เดิม
+
         if df is None:
-            results[key] = []
+            results[key] = []   # selective scan: CSV หาย = ว่าง (พฤติกรรมเดิม, Phase 2 ค่อยแยก missing≠empty)
             continue
         records = df_to_records(df)
         results[key] = records
@@ -213,21 +228,21 @@ def build_combined(individual: dict[str, list[dict]], growth_map: dict[str, dict
     รวมผลทุก scan เป็นตารางเดียวต่อ 1 ticker (สำหรับหน้า Scanner 'ทั้งหมด')
     universe = หุ้นที่ผ่านอย่างน้อย 1 scan (sepa / kell / wyckoff_stage / breakout)
     """
-    sepa_set = {r["Ticker"] for r in individual["sepa"]}
-    kell_set = {r["Ticker"] for r in individual["oliver_kell"]}
-    breakout_set = {r["Ticker"] for r in individual["breakout"]}
+    sepa_set = {r["Ticker"] for r in individual.get("sepa", [])}
+    kell_set = {r["Ticker"] for r in individual.get("oliver_kell", [])}
+    breakout_set = {r["Ticker"] for r in individual.get("breakout", [])}
     lekkung_set = {r["Ticker"] for r in individual.get("lekkung", [])}
     oneil_set = {r["Ticker"] for r in individual.get("oneil", [])}
     weinstein_set = {r["Ticker"] for r in individual.get("weinstein", [])}
 
-    stage_map = {r["Ticker"]: r["Stage"] for r in individual["market_stage"]}
-    price_map_stage = {r["Ticker"]: r["Price"] for r in individual["market_stage"]}
-    price_map_sepa = {r["Ticker"]: r["Price"] for r in individual["sepa"]}
-    price_map_kell = {r["Ticker"]: r["Price"] for r in individual["oliver_kell"]}
-    price_map_breakout = {r["Ticker"]: r["Price"] for r in individual["breakout"]}
+    stage_map = {r["Ticker"]: r["Stage"] for r in individual.get("market_stage", [])}
+    price_map_stage = {r["Ticker"]: r["Price"] for r in individual.get("market_stage", [])}
+    price_map_sepa = {r["Ticker"]: r["Price"] for r in individual.get("sepa", [])}
+    price_map_kell = {r["Ticker"]: r["Price"] for r in individual.get("oliver_kell", [])}
+    price_map_breakout = {r["Ticker"]: r["Price"] for r in individual.get("breakout", [])}
     price_map_lekkung = {r["Ticker"]: r["Price"] for r in individual.get("lekkung", []) if "Price" in r}
     price_map_oneil = {r["Ticker"]: r["Price"] for r in individual.get("oneil", []) if "Price" in r}
-    rs_map = {r["Ticker"]: r["RS_Rating"] for r in individual["rs_ranking"]}
+    rs_map = {r["Ticker"]: r["RS_Rating"] for r in individual.get("rs_ranking", [])}
     price_map_weinstein = {r["Ticker"]: r["Price"] for r in individual.get("weinstein", []) if "Price" in r}
 
     universe = sepa_set | kell_set | breakout_set | lekkung_set | oneil_set | weinstein_set | set(stage_map.keys())
@@ -341,16 +356,22 @@ def main():
     )
     print(f"  ✓ generated_at.json: {len(generated_at_manifest)} scan keys stamped {generated_at}")
 
-    print("\nกำลังรวมข้อมูลทุก scan เข้าตารางเดียว (combined.json)...")
-    growth_map = build_growth_map()
-    combined = build_combined(individual, growth_map)
-    combined_path = OUTPUT_DIR / "combined.json"
-    combined_out = {
-        "generated_at": generated_at,
-        "data": combined,
-    }
-    combined_path.write_text(json.dumps(combined_out, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
-    print(f"  ✓ combined.json: {len(combined)} ticker (ผ่านอย่างน้อย 1 scan)")
+    # combined พึ่ง market_stage เป็นแกน (stage/is_uptrend/combo_score) — ถ้า stage ถูก drop
+    # แล้วยังเขียน combined ต่อ = universe หด + stage=null ทั้งกระดาน + combo_score เพี้ยน หลุดไป Vercel
+    # → ถ้า market_stage ไม่ผ่าน guard รอบนี้ ให้ skip combined ด้วย (คง combined.json เดิม)
+    if "market_stage" not in individual:
+        print("  ❌ DROP GUARD: market_stage ถูก drop รอบนี้ — ข้ามเขียน combined.json (กัน silent corruption) คงไฟล์เดิม")
+    else:
+        print("\nกำลังรวมข้อมูลทุก scan เข้าตารางเดียว (combined.json)...")
+        growth_map = build_growth_map()
+        combined = build_combined(individual, growth_map)
+        combined_path = OUTPUT_DIR / "combined.json"
+        combined_out = {
+            "generated_at": generated_at,
+            "data": combined,
+        }
+        combined_path.write_text(json.dumps(combined_out, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+        print(f"  ✓ combined.json: {len(combined)} ticker (ผ่านอย่างน้อย 1 scan)")
     
     print("\nกำลังประมวลผล NVDR...")
     build_nvdr(OUTPUT_DIR)
