@@ -158,7 +158,14 @@ def scan_canslim():
         print("-" * 95)
         print(f"✨ คัดหุ้นผ่านตามกฎ CANSLIM ระดับผู้นำ: {len(display_df)} ตัว (บันทึกไปที่ {output_path.name})")
     else:
+        # scan รันจบครบทุกขั้นแล้วแต่ไม่มีหุ้นผ่านเกณฑ์ = "ว่างจริง" ต้องเขียน CSV
+        # ที่มีแต่ header (0 แถว) ไม่ใช่ไม่เขียนไฟล์ - เดิมเคสนี้กับเคส scan ล่ม
+        # (return ก่อนหน้า) ออกทางเดียวกันคือไม่มีไฟล์ ทำให้ convert_to_json แยกไม่ออก
+        # แล้วเขียน oneil.json = [] ทับของเดิมเงียบๆ (2026-08-20 หายจาก 5 ตัวเหลือ 0)
+        final_canslim_df["ROE_Display"] = final_canslim_df["ROE"]
+        final_canslim_df.to_csv(output_path, index=False, encoding="utf-8-sig")
         print("📉 ไม่พบหุ้นผู้นำตลาดที่เข้าเกณฑ์สแกน CANSLIM ครบถ้วนในรอบนี้")
+        print(f"   (เขียน {output_path.name} 0 แถว = ว่างจริง ไม่ใช่ scan ล่ม)")
 
 
 if __name__ == "__main__":

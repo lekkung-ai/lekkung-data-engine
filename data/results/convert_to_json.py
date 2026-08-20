@@ -81,8 +81,14 @@ def build_individual_jsons() -> dict[str, list[dict]]:
                   f"(universe scan ล่ม?) — ข้าม ไม่เขียน {key}.json คงไฟล์เดิม")
             continue  # ไม่ใส่ใน results → main ไม่เขียนไฟล์ → cp ไม่ทับ committed เดิม
 
+        # Missing Guard: selective scan ที่ "CSV หายทั้งไฟล์" ≠ "รันจบแล้วไม่มีหุ้นผ่าน"
+        # scanner เขียนไฟล์เสมอเมื่อรันจบ (แม้ 0 แถว) ดังนั้นไฟล์หาย = scan ล่ม/ไม่ได้รัน
+        # → ไม่เขียนทับ ปล่อย JSON เดิมใน stockdesk ยืน (เหมือน drop guard ด้านบน)
+        # เดิมเคสนี้เขียน [] ทับเงียบๆ ทำให้ oneil.json หายจาก 5 ตัวเหลือ 0 (2026-08-20)
+        # โดยไม่มีใครแยกออกว่าเกิดจาก scanner ล่มหรือตลาดไม่มีหุ้นเข้าเกณฑ์จริง
         if df is None:
-            results[key] = []   # selective scan: CSV หาย = ว่าง (พฤติกรรมเดิม, Phase 2 ค่อยแยก missing≠empty)
+            print(f"  ❌ MISSING GUARD: ไม่พบ {filename} (scan ล่ม/ไม่ได้รัน?) — "
+                  f"ข้าม ไม่เขียน {key}.json คงไฟล์เดิม")
             continue
         records = df_to_records(df)
         results[key] = records
