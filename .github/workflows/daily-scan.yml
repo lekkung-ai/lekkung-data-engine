@@ -323,11 +323,26 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          if [ "${{ steps.run_pipeline.outcome }}" != "success" ]; then
-            python scripts/write_pipeline_status.py --status failure --failed-step "Run Master Pipeline (all)" --source cloud
-          elif [ "${{ steps.push_stockdesk.outcome }}" != "success" ]; then
-            python scripts/write_pipeline_status.py --status failure --failed-step "Commit and Push to stockdesk" --source cloud
+          # run_all.py บันทึก scan ย่อยที่ returncode != 0 ไว้ที่ data/results/run_status.json
+          # ของ data_engine (gitignore ไม่ถูก commit อยู่แค่ในเครื่อง runner) - อ่านมาส่งต่อ
+          # ให้ pipeline_status.json ไม่งั้น scan ล่มจะขึ้น success เงียบ อย่างเคส CAN SLIM
+          # 2026-08-20 ที่ oneil.json หายจาก 5 ตัวเหลือ 0 โดยไม่มีสัญญาณอะไรเลย
+          FAILED_STEPS=""
+          if [ -f ../data/results/run_status.json ]; then
+            # || true สำคัญ: step นี้รันด้วย bash -e และต้องรอดเสมอ (if: always())
+            # ถ้า run_status.json พัง/อ่านไม่ออก ต้องได้ค่าว่างแล้วไปต่อ ห้ามล้มทั้ง step
+            # เพราะ pipeline_status.json จะไม่ถูกเขียน = แบนเนอร์ค้างของเก่า
+            FAILED_STEPS=$(python -c "import json; print(' '.join(json.load(open('../data/results/run_status.json')).get('failed_steps') or []))" 2>/dev/null || true)
+            echo "run_all.py failed_steps: ${FAILED_STEPS:-(none)}"
           else
-            python scripts/write_pipeline_status.py --status success --source cloud
+            echo "run_status.json not found - skipping failed_steps"
+          fi
+
+          if [ "${{ steps.run_pipeline.outcome }}" != "success" ]; then
+            python scripts/write_pipeline_status.py --status failure --failed-step "Run Master Pipeline (all)" --source cloud --failed-steps $FAILED_STEPS
+          elif [ "${{ steps.push_stockdesk.outcome }}" != "success" ]; then
+            python scripts/write_pipeline_status.py --status failure --failed-step "Commit and Push to stockdesk" --source cloud --failed-steps $FAILED_STEPS
+          else
+            python scripts/write_pipeline_status.py --status success --source cloud --failed-steps $FAILED_STEPS
           fi
           python scripts/safe_push.py --repo . --message "Update pipeline status" --add public/data/pipeline_status.json
