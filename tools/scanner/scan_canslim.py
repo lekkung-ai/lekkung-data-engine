@@ -109,8 +109,16 @@ def scan_canslim():
     df_merged["RS_Rating"] = df_merged["Ticker"].map(rs_dict).fillna(0).astype(int)
 
     # 2. คัดกรองปัจจัยพื้นฐานเข้มข้น (C, A, L)
-    # ROE threshold (17% ตามสูตร CANSLIM)
-    roe_threshold = 0.17 if df_merged["ROE"].max() <= 1.0 else 17.0
+    # ROE threshold (17% ตามสูตร CANSLIM) - ROE ใน daily_prices.csv เก็บเป็น "เศษส่วน"
+    # เสมอ (2_download_history.py หาร TradingView ด้วย 100 และ yfinance
+    # returnOnEquity ก็เป็นเศษส่วนอยู่แล้ว) เหมือนที่ scan_lekkung_growth.py
+    # hard-code 0.15 ไว้ตรงๆ
+    # เดิมบรรทัดนี้เดาหน่วยจาก df_merged["ROE"].max() <= 1.0 ซึ่งพังทันทีที่มีหุ้น
+    # ROE เกิน 100% สักตัวผ่านด่านเทคนิคเข้ามา: max > 1.0 -> threshold กลายเป็น 17.0
+    # เทียบกับค่าที่เป็นเศษส่วน -> ไม่มีหุ้นตัวไหนผ่าน -> สแกนว่างทั้งกระดาน
+    # (2026-08-20/21: SRICHA ROE 0.626 -> 1.1253 หลังงบ Q2 ทำให้ CAN SLIM เหลือ 0 ตัว
+    #  ทั้งที่ COM7/FORTH/BCP/MBK/AMATA ยังเข้าเกณฑ์ครบ)
+    ROE_THRESHOLD = 0.17
 
     # คัดกรอง
     # C: Net Profit Growth QoQY >= 20%
@@ -118,7 +126,7 @@ def scan_canslim():
     
     # A: Profit Growth YoY >= 20% และ ROE >= 17%
     cond_a_growth = df_merged["Profit_Growth_YoY"] >= 20.0
-    cond_a_roe = df_merged["ROE"] >= roe_threshold
+    cond_a_roe = df_merged["ROE"] >= ROE_THRESHOLD
     
     # L: RS Rating >= 80 (ต้องเป็นหุ้นนำในตลาด)
     cond_l = df_merged["RS_Rating"] >= 80
@@ -136,11 +144,10 @@ def scan_canslim():
             "NetProfit_Growth_QoQY", "Profit_Growth_YoY", "ROE", "ADTV(MB)"
         ]
         
-        # จัดฟอร์แมต ROE ให้แสดงเป็น % สวยงาม
-        if final_canslim_df["ROE"].max() <= 1.0:
-            final_canslim_df["ROE_Display"] = (final_canslim_df["ROE"] * 100).round(2)
-        else:
-            final_canslim_df["ROE_Display"] = final_canslim_df["ROE"].round(2)
+        # จัดฟอร์แมต ROE ให้แสดงเป็น % สวยงาม (เศษส่วน -> % เสมอ ด้วยเหตุผลเดียว
+        # กับ ROE_THRESHOLD ข้างบน: เดาหน่วยจาก max() ทำให้หุ้น ROE เกิน 100%
+        # ตัวเดียวพาทั้งตารางไปแสดงผิดหน่วย เช่น 0.47 -> "0.47%" แทน "47%")
+        final_canslim_df["ROE_Display"] = (final_canslim_df["ROE"] * 100).round(2)
 
         # จัดลำดับคอลัมน์และตั้งชื่อใหม่สำหรับการแสดงผล
         display_df = final_canslim_df[cols_to_keep + ["ROE_Display"]].copy()
