@@ -3,6 +3,7 @@ fetch_macro.py
 ดึงราคาปิดรายวัน 180 วันย้อนหลัง + ล่าสุด + %1D + %1M ของ commodity/FX futures
 ที่ผูกกับหุ้นไทยกลุ่มพลังงาน/เกษตร/การเงิน ผ่าน yfinance + TradingView API
 """
+import os
 import sys
 import time
 from pathlib import Path
@@ -195,17 +196,38 @@ def fetch_symbol(symbol: str, retries: int = 2) -> dict | None:
     return None
 
 
+def resolve_stockdesk_macro_path() -> Path | None:
+    """Committed last-good macro JSON in stockdesk, for the merge-guard fallback.
+
+    Read from the STOCKDESK_MACRO_JSON env var. In CI, daily-scan.yml
+    sparse-checks-out stockdesk's data/scans/macro_commodities.json *before*
+    run_all and points this env var at it — the main stockdesk checkout happens
+    after the pipeline, so it can't be used here. Locally, set the same env var
+    to your stockdesk clone's file to get the same cross-repo fallback +
+    auto-sync; otherwise only out_path (the previous local run) is used.
+
+    The old hard-coded ``parents[4]/"Claude"/"dashboard"/"stockdesk"`` path was
+    wrong on every machine (repo is lekkung-stockdesk) and in CI, so the guard
+    never found last-good and overwrote failed symbols with None — the /macro
+    "ไม่มีข้อมูล" loop.
+    """
+    env_path = os.getenv("STOCKDESK_MACRO_JSON")
+    return Path(env_path) if env_path else None
+
+
 def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     out_path = OUTPUT_DIR / "macro_commodities.json"
-    
-    # Path to stockdesk's macro_commodities.json for auto-sync & fallback
-    stockdesk_scans_dir = Path(__file__).resolve().parents[4] / "Claude" / "dashboard" / "stockdesk" / "data" / "scans"
-    stockdesk_path = stockdesk_scans_dir / "macro_commodities.json"
 
-    # 1. Load previous VALID snapshots for fallback if fetching fails
+    # Committed last-good macro JSON in stockdesk (env-driven; see resolver).
+    stockdesk_path = resolve_stockdesk_macro_path()
+
+    # 1. Load previous VALID snapshots for fallback if fetching fails.
+    #    out_path = previous local run (gitignored, absent on fresh CI checkout);
+    #    stockdesk_path = committed last-good (authoritative in CI).
     existing_commodities: dict[str, dict] = {}
-    for p in [out_path, stockdesk_path]:
+    fallback_sources = [out_path] + ([stockdesk_path] if stockdesk_path else [])
+    for p in fallback_sources:
         if p.exists():
             try:
                 prev = json.loads(p.read_text(encoding="utf-8"))
@@ -233,19 +255,40 @@ def main():
         print(f"  ⏳ ({i + 1}/{total_symbols}) {symbol} ({meta['name_en']})...")
         data = fetch_symbol(symbol)
 
-        # Validate fetched data
+        # Validate fetched data. A positive close IS valid data — it's exactly
+        # what the /macro page needs (its "ไม่มีข้อมูล" test is close > 0). An
+        # empty series only means "no sparkline history", not "no data".
+        # Previously TV_MAPPING symbols that fell back to TradingView (which
+        # returns a close but series=[]) were rejected here and overwritten with
+        # None — one half of the /macro loop. Now any positive close counts;
+        # series_empty is flagged so the frontend knows there's no history line.
         is_valid_fetch = False
+        series_empty = False
         if data is not None:
             close_val = data.get("latest", {}).get("close")
             series_len = len(data.get("series", []))
-            # A valid fetch must have positive close price
-            if close_val is not None and close_val > 0 and (series_len > 0 or symbol in DIRECT_TV_MAPPING or symbol.startswith("PETRO_")):
+            if close_val is not None and close_val > 0:
                 is_valid_fetch = True
+                series_empty = series_len == 0
 
         if is_valid_fetch and data is not None:
+            # Series-preserve: a TV-fallback fresh fetch carries a close but no
+            # history (series=[]). Don't drop the minichart — reuse the last-good
+            # series and extend it with today's close so the line stays
+            # continuous. Only truly seriesless when there's no last-good either.
+            if series_empty:
+                prev_series = existing_commodities.get(symbol, {}).get("series") or []
+                if prev_series:
+                    latest_pt = data.get("latest") or {}
+                    merged = list(prev_series)
+                    if latest_pt.get("date") and (not merged or merged[-1].get("date") != latest_pt["date"]):
+                        merged.append({"date": latest_pt["date"], "close": latest_pt["close"]})
+                    data["series"] = merged[-SERIES_DAYS:]
+                    series_empty = False
             successfully_fetched_count += 1
             data["last_success_date"] = data.get("latest", {}).get("date") or now_iso()[:10]
             data["never_fetched"] = False
+            data["series_empty"] = series_empty
             print(
                 f"     ✓ [NEW] latest={data['latest'].get('close')} ({data['latest'].get('date')}) "
                 f"1D={data.get('pct_1d')} 1M={data.get('pct_1m')} series={len(data.get('series', []))} วัน"
@@ -322,8 +365,10 @@ def main():
     )
     print(f"   ขนาดไฟล์: {out_path.stat().st_size / 1024:.1f} KB")
 
-    # Auto-sync to stockdesk scans directory
-    if stockdesk_scans_dir.exists():
+    # Auto-sync to stockdesk (local-dev convenience). In CI the copy into
+    # stockdesk_repo is done by daily-scan.yml, so this only fires when
+    # STOCKDESK_MACRO_JSON points at a writable local clone.
+    if stockdesk_path is not None and stockdesk_path.parent.exists():
         try:
             stockdesk_path.write_text(json_str, encoding="utf-8")
             print(f"   🚀 Auto-synced to stockdesk: {stockdesk_path}")

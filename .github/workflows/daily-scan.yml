@@ -132,8 +132,30 @@ jobs:
           sparse-checkout-cone-mode: false
           path: stockdesk_earnings_check
 
+      - name: Checkout stockdesk macro snapshot (last-good for merge-guard)
+        # fetch_macro.py merges failed Yahoo =F symbols against the previously
+        # committed macro_commodities.json (keep last-good instead of writing
+        # None). The main stockdesk checkout below is write-only and happens
+        # *after* run_all.py, so this early read-only sparse checkout is the only
+        # way the guard can see yesterday's values on a fresh CI runner. Without
+        # it the guard finds nothing and every Yahoo-down day wipes the /macro
+        # page ("ไม่มีข้อมูล" loop). Never fails the job — the guard just falls
+        # back to out_path (absent on fresh CI) and, if all else fails, a
+        # None placeholder, same as before.
+        uses: actions/checkout@v6
+        continue-on-error: true
+        with:
+          repository: lekkung-ai/lekkung-stockdesk
+          token: ${{ secrets.DASHBOARD_PAT }}
+          sparse-checkout: |
+            data/scans/macro_commodities.json
+          sparse-checkout-cone-mode: false
+          path: stockdesk_macro_check
+
       - name: Run Master Pipeline (all)
         id: run_pipeline
+        env:
+          STOCKDESK_MACRO_JSON: stockdesk_macro_check/data/scans/macro_commodities.json
         run: python run_all.py all
 
       - name: Checkout stockdesk repository
