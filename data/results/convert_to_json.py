@@ -246,6 +246,15 @@ def build_combined(individual: dict[str, list[dict]], growth_map: dict[str, dict
     oneil_set = {r["Ticker"] for r in individual.get("oneil", [])}
     weinstein_set = {r["Ticker"] for r in individual.get("weinstein", [])}
 
+    # ADTV floor ไม่ใช่ confluence axis เดียวกับ combo_score — หุ้น low-liquidity
+    # ที่ผ่าน sepa/kell ยัง +1 คะแนนเหมือนเดิม (combo_score ไม่เปลี่ยน) แค่ propagate
+    # flag มาให้ UI (Sector Map ฯลฯ) ติด marker ได้ แหล่งความจริง = Low_Liquidity
+    # ที่ scan_sepa.py/scan_oliver_kell.py คำนวณแล้ว ไม่คำนวณ ADTV ซ้ำที่นี่
+    low_liquidity_set = (
+        {r["Ticker"] for r in individual.get("sepa", []) if r.get("Low_Liquidity")}
+        | {r["Ticker"] for r in individual.get("oliver_kell", []) if r.get("Low_Liquidity")}
+    )
+
     stage_map = {r["Ticker"]: r["Stage"] for r in individual.get("market_stage", [])}
     price_map_stage = {r["Ticker"]: r["Price"] for r in individual.get("market_stage", [])}
     price_map_sepa = {r["Ticker"]: r["Price"] for r in individual.get("sepa", [])}
@@ -292,6 +301,7 @@ def build_combined(individual: dict[str, list[dict]], growth_map: dict[str, dict
             "combo_score": combo_score,
             "growth_yoy": growth_map.get(ticker, {}).get("growth_yoy"),
             "growth_qoq": growth_map.get(ticker, {}).get("growth_qoq"),
+            "Low_Liquidity": ticker in low_liquidity_set,
         })
 
     # เรียงตาม combo_score มาก -> น้อย แล้วตาม rs_score มาก -> น้อย

@@ -33,10 +33,11 @@ def scan_oliver_kell_strict():
                 continue
 
             # --- [ด่านที่ 1] Liquidity Filter (สภาพคล่อง) ---
+            # ADTV floor ไม่ใช่ส่วนหนึ่งของ Trend Template/Kell's Signal — เป็น
+            # liquidity gate ที่เราใส่เอง หุ้นที่ผ่านด่าน 2-3 แต่สภาพคล่องต่ำกว่า
+            # floor ยังต้อง "โผล่พร้อม flag" ไม่ใช่หายเงียบ (ตัดสินใจที่หน้าเว็บ)
             vol_mb = calculate_adtv(price_series, vol_series, window=5)
-
-            if vol_mb < ADTV_MIN_MB:
-                continue  # เขี่ยหุ้นป่าช้าทิ้งทันที
+            low_liquidity = vol_mb < ADTV_MIN_MB
 
             # --- คำนวณเส้นค่าเฉลี่ย ---
             ema10 = price_series.ewm(span=10, adjust=False).mean()
@@ -93,6 +94,7 @@ def scan_oliver_kell_strict():
                         "Dist_EMA10_%": round(extension_pct, 2),
                         "ADTV(MB)": round(vol_mb, 1),
                         "Status": "🔥 Leader Ready",
+                        "Low_Liquidity": low_liquidity,
                     }
                 )
 

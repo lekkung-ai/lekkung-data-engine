@@ -98,8 +98,12 @@ def scan_sepa():
         ticker = file_path.stem
         try:
             df, adtv_mb = prepare_stock_data(file_path, min_days=250)
-            if df is None or adtv_mb < ADTV_MIN_MB:
+            if df is None:
                 continue
+            # ADTV floor ไม่ใช่ส่วนหนึ่งของ Trend Template 8 ข้อ (Minervini p.79) —
+            # เป็น liquidity gate ที่เราใส่เอง หุ้นที่ผ่าน 8/8 แต่สภาพคล่องต่ำกว่า
+            # floor ยังต้อง "โผล่พร้อม flag" ไม่ใช่หายเงียบ (ตัดสินใจที่หน้าเว็บ)
+            low_liquidity = adtv_mb < ADTV_MIN_MB
 
             price_series = df["Close"]
 
@@ -164,6 +168,7 @@ def scan_sepa():
                         "T7_Within_52wHigh_25pct": cond_7,
                         "T8_RS_At_Least_70": True,
                         "Fundamental_Pass": fundamental_pass_for(ticker, fundamentals),
+                        "Low_Liquidity": low_liquidity,
                     }
                 )
         except Exception as e:
