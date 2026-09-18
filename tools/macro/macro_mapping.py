@@ -85,40 +85,6 @@ COMMODITIES = {
             "MILL": "revenue",
         },
     },
-    "PETRO_HDPE": {
-        "name_th": "ส่วนต่างเม็ดพลาสติก HDPE",
-        "name_en": "HDPE Polymer Spread",
-        "unit": "USD/เมตริกตัน",
-        "zone": "industrial",
-        "tickers": ["PTTGC", "SCC", "IRPC"],
-        "ticker_impacts": {
-            "PTTGC": "revenue",
-            "SCC": "revenue",
-            "IRPC": "revenue",
-        },
-    },
-    "PETRO_PX": {
-        "name_th": "ส่วนต่างพารากไซลีน (PX)",
-        "name_en": "Paraxylene Petrochem Spread",
-        "unit": "USD/เมตริกตัน",
-        "zone": "industrial",
-        "tickers": ["IVL", "PTTGC", "TOP"],
-        "ticker_impacts": {
-            "IVL": "revenue",
-            "PTTGC": "revenue",
-            "TOP": "revenue",
-        },
-    },
-    "PETRO_PTA": {
-        "name_th": "ส่วนต่าง PTA (โพลีเอสเตอร์)",
-        "name_en": "PTA Polymer Spread",
-        "unit": "USD/เมตริกตัน",
-        "zone": "industrial",
-        "tickers": ["IVL"],
-        "ticker_impacts": {
-            "IVL": "revenue",
-        },
-    },
     "HG=F": {
         "name_th": "ทองแดง",
         "name_en": "Copper Futures",
@@ -359,19 +325,6 @@ COMMODITIES = {
         "ticker_impacts": {
             "PSL": "revenue",
             "TTA": "revenue",
-        },
-    },
-    "ZIM": {
-        "name_th": "ค่าระวางเรือตู้คอนเทนเนอร์ (Proxy)",
-        "name_en": "Container Shipping Index Proxy",
-        "unit": "USD/หุ้น",
-        "zone": "financial",
-        "tickers": ["RCL", "WICE", "III", "SJWD"],
-        "ticker_impacts": {
-            "RCL": "revenue",
-            "WICE": "margin",
-            "III": "margin",
-            "SJWD": "margin",
         },
     },
 }

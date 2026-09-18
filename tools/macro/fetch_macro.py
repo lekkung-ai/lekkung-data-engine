@@ -63,7 +63,6 @@ TV_MAPPING = {
     "DX-Y.NYB": ("DXY", "cfd", "TVC"),
     "^TNX": ("US10Y", "cfd", "TVC"),
     "BDRY": ("BDRY", "america", "AMEX"),
-    "ZIM": ("ZIM", "america", "NYSE"),
 }
 
 
@@ -133,14 +132,6 @@ def fetch_tradingview(symbol: str) -> dict | None:
 
 
 def fetch_symbol(symbol: str, retries: int = 2) -> dict | None:
-    # Synthetic Petrochemical Spreads
-    if symbol == "PETRO_HDPE":
-        return {"latest": {"date": now_iso()[:10], "close": 425.0}, "pct_1d": 1.2, "pct_1m": 3.5, "series": []}
-    if symbol == "PETRO_PX":
-        return {"latest": {"date": now_iso()[:10], "close": 310.0}, "pct_1d": 0.8, "pct_1m": 2.1, "series": []}
-    if symbol == "PETRO_PTA":
-        return {"latest": {"date": now_iso()[:10], "close": 185.0}, "pct_1d": 0.5, "pct_1m": 1.8, "series": []}
-
     # Direct TV mapping symbols bypass yfinance
     if symbol in DIRECT_TV_MAPPING:
         return fetch_direct_tradingview(symbol)
