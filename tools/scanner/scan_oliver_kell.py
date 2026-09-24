@@ -1,13 +1,98 @@
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 # 🔌 เชื่อมต่อระบบเดิมของคุณ (ดึง Path จาก config.py)
 sys.path.append(str(Path(__file__).resolve().parents[2]))
-from config import ADTV_MIN_MB, HISTORY_DIR, RESULTS_DIR  # type: ignore
-from utils import calculate_adtv, load_price_volume  # type: ignore
+from config import ADTV_MIN_MB, HISTORY_DIR, RESULTS_DIR, RS_FILE  # type: ignore
+from utils import calculate_adtv, load_full_df, load_price_volume  # type: ignore
+
+# DUPLICATED from scan_sepa.py: fetch_fundamental_data() + fundamental_pass_for() + FUND thresholds
+# keep in sync until consolidated into utils.py (line numbers drift — do NOT re-add them)
+# ── SEPA Fundamental Filter (Phase 3) ────────────────────────────────────────
+# Data source: TradingView's scanner API (scanner.tradingview.com/thailand/scan)
+# — same source already used by the dashboard's /api/fundamental route.
+# Verified against Yahoo Finance quoteSummary on 5 sample tickers first: Yahoo
+# only returned quarterly EPS for 4/5 (missing FSMART) and only exposes 4
+# trailing quarters (not enough to compute a true YoY delta reliably without
+# extra date-matching, since its wider fundamentals-timeseries history has
+# gaps). TradingView returns pre-computed YoY growth for 5/5 with no gaps.
+#
+# "EPS Acceleration" has no direct "prior quarter's YoY growth" field on
+# TradingView, so as a disclosed proxy this compares the latest quarter's YoY
+# growth against the trailing-twelve-month YoY growth: if the quarter is
+# outpacing the trailing-year average, growth is accelerating.
+TV_FUNDAMENTAL_COLUMNS = [
+    "name",
+    "total_revenue_yoy_growth_fq",
+    "earnings_per_share_diluted_yoy_growth_fq",
+    "earnings_per_share_diluted_yoy_growth_ttm",
+]
+EPS_YOY_MIN = 20.0
+REVENUE_YOY_MIN = 15.0
+
+
+def fetch_fundamental_data() -> dict:
+    """ดึง EPS/Revenue YoY growth ของหุ้นไทยทั้งตลาดในคำขอเดียว (bulk scan)."""
+    try:
+        res = requests.post(
+            "https://scanner.tradingview.com/thailand/scan",
+            json={"markets": ["thailand"], "columns": TV_FUNDAMENTAL_COLUMNS, "range": [0, 3000]},
+            timeout=15,
+        )
+        res.raise_for_status()
+        rows = res.json().get("data", [])
+    except Exception as e:
+        print(f"⚠️ ดึงข้อมูล Fundamental จาก TradingView ไม่สำเร็จ: {e}")
+        return {}
+
+    out = {}
+    for row in rows:
+        d = row.get("d", [])
+        if len(d) < 4 or not d[0]:
+            continue
+        ticker = str(d[0]).upper()
+        out[ticker] = {"revenue_yoy": d[1], "eps_yoy": d[2], "eps_yoy_ttm": d[3]}
+    return out
+
+
+def fundamental_pass_for(ticker: str, fundamentals: dict):
+    """None = ไม่มีข้อมูลพอตัดสิน, True/False = ผ่าน/ไม่ผ่านเกณฑ์ fundamental"""
+    f = fundamentals.get(ticker.upper())
+    if not f:
+        return None
+    eps_yoy, rev_yoy, eps_yoy_ttm = f["eps_yoy"], f["revenue_yoy"], f["eps_yoy_ttm"]
+    if eps_yoy is None or rev_yoy is None or eps_yoy_ttm is None:
+        return None
+    eps_growth_ok = eps_yoy > EPS_YOY_MIN
+    revenue_growth_ok = rev_yoy > REVENUE_YOY_MIN
+    eps_accelerating = eps_yoy > eps_yoy_ttm
+    return bool(eps_growth_ok and revenue_growth_ok and eps_accelerating)
+
+
+def pct_from_52w_high(file_path, price):
+    """%_From_High เป็น string เช่น "-5.6%" หรือ None — เพิ่มเติมอย่างเดียว ไม่กระทบ pass/fail ของ Kell.
+
+    # 52W high = intraday 252-day, mirror scan_sepa.py:126 — keep in sync
+    ประวัติ High < 252 วัน / high ไม่ finite หรือ 0 / pct ไม่ finite → None
+    """
+    try:
+        high = pd.to_numeric(load_full_df(file_path)["High"], errors="coerce").dropna()
+        if len(high) < 252:
+            return None
+        high_52w = float(high.iloc[-252:].max())
+        if not math.isfinite(high_52w) or high_52w <= 0:
+            return None
+        pct = ((price - high_52w) / high_52w) * 100
+        if not math.isfinite(pct):
+            return None
+        return f"{round(pct, 2)}%"
+    except Exception:
+        return None
 
 
 def scan_oliver_kell_strict():
@@ -22,6 +107,19 @@ def scan_oliver_kell_strict():
         f"🏆 [U.S. Champion Logic] กำลังสแกนหา 'หุ้นผู้นำ' ตามสูตร Strict Oliver Kell... ({datetime.now().strftime('%H:%M')})"
     )
     passed_stocks = []
+
+    # RS Rating — Kell ไม่ gate RS จึงไม่มีค่า = None (ไม่ใช่ 0 ซึ่งเป็นค่าปลอม)
+    rs_dict = {}
+    if RS_FILE.exists():
+        try:
+            df_watch = pd.read_csv(RS_FILE, encoding="utf-8")
+            rs_dict = dict(
+                zip(df_watch["Ticker"].astype(str).str.upper(), df_watch["RS_Rating"])
+            )
+        except:
+            pass
+
+    fundamentals = fetch_fundamental_data()
 
     # วนลูปอ่านไฟล์หุ้นทีละตัวจากโฟลเดอร์ history
     for file_path in HISTORY_DIR.glob("*.csv"):
@@ -85,6 +183,14 @@ def scan_oliver_kell_strict():
                 # ใช้ค่าที่ใกลัที่สุดสำหรับการแสดงผล
                 extension_pct = min(dist_ema10_pct, dist_ema20_pct)
 
+                rs_val = rs_dict.get(ticker.upper(), None)
+                try:
+                    rs_val = float(rs_val) if rs_val is not None else None
+                    if rs_val is not None and not math.isfinite(rs_val):
+                        rs_val = None
+                except (TypeError, ValueError):
+                    rs_val = None
+
                 passed_stocks.append(
                     {
                         "Ticker": ticker,
@@ -95,6 +201,10 @@ def scan_oliver_kell_strict():
                         "ADTV(MB)": round(vol_mb, 1),
                         "Status": "🔥 Leader Ready",
                         "Low_Liquidity": low_liquidity,
+                        # เพิ่มสำหรับ composite (additive — 8 field ข้างบนไม่เปลี่ยน)
+                        "RS_Rating": rs_val,
+                        "Fundamental_Pass": fundamental_pass_for(ticker, fundamentals),
+                        "%_From_High": pct_from_52w_high(file_path, curr_price),
                     }
                 )
 
