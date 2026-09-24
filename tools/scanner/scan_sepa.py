@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore")
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB, HISTORY_DIR, RS_FILE, SEPA_FILE  # type: ignore
 from utils import calculate_adtv, load_price_volume, prepare_stock_data  # type: ignore
+from vcp import VCP_KEYS, vcp_metrics  # type: ignore
 
 # ── SEPA Fundamental Filter (Phase 3) ────────────────────────────────────────
 # Data source: TradingView's scanner API (scanner.tradingview.com/thailand/scan)
@@ -145,6 +146,13 @@ def scan_sepa():
 
                 pct_from_high = ((current_price - high_52_week) / high_52_week) * 100
 
+                # VCP เป็นคอลัมน์เสริม — error ต้องไม่ทำให้แถว SEPA หายหรือ scan ล้ม
+                try:
+                    vcp_cols = vcp_metrics(df)
+                except Exception as e:
+                    print(f"⚠️ VCP error {ticker}: {e}")
+                    vcp_cols = dict.fromkeys(VCP_KEYS)
+
                 passed_stocks.append(
                     {
                         "Ticker": ticker,
@@ -169,6 +177,8 @@ def scan_sepa():
                         "T8_RS_At_Least_70": True,
                         "Fundamental_Pass": fundamental_pass_for(ticker, fundamentals),
                         "Low_Liquidity": low_liquidity,
+                        # VCP footprint — คอลัมน์เพิ่มล้วนๆ (ไม่กระทบเงื่อนไข/ชุดหุ้น)
+                        **vcp_cols,
                     }
                 )
         except Exception as e:
