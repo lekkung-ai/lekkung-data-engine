@@ -152,6 +152,21 @@ jobs:
           sparse-checkout-cone-mode: false
           path: stockdesk_macro_check
 
+      - name: Checkout stockdesk sector_map (for 4_calculate_sector_rs.py)
+        # 4_calculate_sector_rs.py needs the hand-curated sector_map.json and
+        # runs inside run_all.py, before the main stockdesk checkout below. It
+        # looks here first (then the local sibling-repo path) and exits 1 with
+        # the tried paths if neither exists. No continue-on-error: without this
+        # file sector_rs.json can't be computed at all.
+        uses: actions/checkout@v6
+        with:
+          repository: lekkung-ai/lekkung-stockdesk
+          token: ${{ secrets.DASHBOARD_PAT }}
+          sparse-checkout: |
+            data/scans/sector_map.json
+          sparse-checkout-cone-mode: false
+          path: stockdesk_sector_map_check
+
       - name: Run Master Pipeline (all)
         id: run_pipeline
         env:
@@ -403,3 +418,28 @@ jobs:
             python scripts/write_pipeline_status.py --status success --source cloud --failed-steps $FAILED_STEPS
           fi
           python scripts/safe_push.py --repo . --message "Update pipeline status" --add public/data/pipeline_status.json
+
+      - name: Fail on failed_steps
+        # run_all.py always exits 0 so one broken scan can't hold back the rest
+        # of the data, and every step above has already pushed what it could.
+        # This last step turns the job red when anything inside run_all.py
+        # failed, instead of it only surfacing as failed_steps in the JSON
+        # (4_calculate_sector_rs.py failed silently every run for 5 weeks).
+        # No pipeline_status.json at all means the pipeline didn't really run.
+        if: always()
+        run: |
+          STATUS_FILE=stockdesk_repo/public/data/pipeline_status.json
+          if [ ! -f "$STATUS_FILE" ]; then
+            echo "::error::$STATUS_FILE not found - pipeline did not run"
+            exit 1
+          fi
+          python - "$STATUS_FILE" <<'PY'
+          import json, sys
+          failed = json.load(open(sys.argv[1], encoding="utf-8")).get("failed_steps") or []
+          if failed:
+              print(f"::error::run_all.py failed_steps ({len(failed)}): {', '.join(failed)}")
+              for name in failed:
+                  print(f"  - {name}")
+              sys.exit(1)
+          print("failed_steps: (none)")
+          PY

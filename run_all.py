@@ -124,7 +124,6 @@ def main():
         CORE_DIR / "1_get_symbols.py",
         CORE_DIR / "2_download_history.py",
         CORE_DIR / "3_calculate_rs.py",
-        CORE_DIR / "4_calculate_sector_rs.py",
         TOOLS_DIR / "market" / "download_nvdr.py",
     ]
 
@@ -142,6 +141,7 @@ def main():
         SCANNER_DIR / "scan_stage_all.py",       # 👈 กู้คืนให้ Vercel
         SCANNER_DIR / "scan_ppbp.py",            # 👈 กู้คืนให้ Vercel
         DATA_DIR / "results" / "convert_to_json.py", # 👈 สร้างไฟล์ JSON สำหรับ Dashboard
+        CORE_DIR / "4_calculate_sector_rs.py",
         SCANNER_DIR / "calculate_breadth.py",        # 👈 SET Market Breadth + FTD/DD + sparklines (/breadth page)
         SCANNER_DIR / "build_topmover_charts.py",    # 👈 mini candlestick + EMA200 bundle (/top-movers page)
         SCANNER_DIR / "fetch_topmover_ranking.py",   # 👈 today's ranking snapshot, archived daily for /top-movers ย้อนหลัง view
