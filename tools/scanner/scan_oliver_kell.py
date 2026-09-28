@@ -9,7 +9,7 @@ import requests
 # 🔌 เชื่อมต่อระบบเดิมของคุณ (ดึง Path จาก config.py)
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB, HISTORY_DIR, RESULTS_DIR, RS_FILE  # type: ignore
-from utils import calculate_adtv, load_full_df, load_price_volume  # type: ignore
+from utils import calculate_adtv, iter_stock_files, load_full_df, load_price_volume  # type: ignore
 
 # DUPLICATED from scan_sepa.py: fetch_fundamental_data() + fundamental_pass_for() + FUND thresholds
 # keep in sync until consolidated into utils.py (line numbers drift — do NOT re-add them)
@@ -122,7 +122,7 @@ def scan_oliver_kell_strict():
     fundamentals = fetch_fundamental_data()
 
     # วนลูปอ่านไฟล์หุ้นทีละตัวจากโฟลเดอร์ history
-    for file_path in HISTORY_DIR.glob("*.csv"):
+    for file_path in iter_stock_files(HISTORY_DIR):
         ticker = file_path.stem
         try:
             # เปลี่ยน min_length เป็น 220 เพราะเราต้องเช็คเส้น SMA200 ย้อนหลังไปอีก 20 วัน

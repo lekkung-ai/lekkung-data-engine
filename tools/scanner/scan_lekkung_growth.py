@@ -15,7 +15,7 @@ import pandas as pd
 # 🔌 ส่วนที่ 1: เชื่อมต่อกับระบบหลัก
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import DAILY_FILE, HISTORY_DIR, RESULTS_DIR
-from utils import load_full_df
+from utils import iter_stock_files, load_full_df
 
 INCOMPLETE_FILE = RESULTS_DIR / "lekkung_incomplete.csv"
 
@@ -108,7 +108,7 @@ def scan_lekkung_growth():
     selected_tickers = []
     market_tech_metrics = {}
 
-    for file_path in HISTORY_DIR.glob("*.csv"):
+    for file_path in iter_stock_files(HISTORY_DIR):
         ticker = file_path.stem.strip()
         try:
             df_price = load_full_df(file_path)

@@ -10,7 +10,7 @@ warnings.filterwarnings("ignore")
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB, HISTORY_DIR, PINE_STAGES_FILE
-from utils import calculate_adtv, load_price_volume
+from utils import calculate_adtv, load_price_volume, iter_stock_files
 
 
 def tv_ema(series, length):
@@ -51,7 +51,7 @@ def scan_pine_script_stages():
     print("🕵️‍♂️ [Quant Engine] กำลังคำนวณ Market Stage (Pine Script Logic)...")
     results = []
 
-    for file_path in HISTORY_DIR.glob("*.csv"):
+    for file_path in iter_stock_files(HISTORY_DIR):
         ticker = file_path.stem
         try:
             p_series, v_series = load_price_volume(file_path, min_length=1)

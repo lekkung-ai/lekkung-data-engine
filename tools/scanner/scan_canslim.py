@@ -13,7 +13,7 @@ import numpy as np
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB, CANSLIM_FILE, DAILY_FILE, HISTORY_DIR, RS_FILE  # type: ignore
-from utils import load_full_df, prepare_stock_data  # type: ignore
+from utils import iter_stock_files, load_full_df, prepare_stock_data  # type: ignore
 
 
 def scan_canslim():
@@ -53,7 +53,7 @@ def scan_canslim():
     passed_stocks = []
 
     # 1. วนลูปเช็คข้อมูลเชิงเทคนิคผ่านราคาใน History
-    for file_path in HISTORY_DIR.glob("*.csv"):
+    for file_path in iter_stock_files(HISTORY_DIR):
         ticker = file_path.stem.strip().upper()
         try:
             df_price, adtv_mb = prepare_stock_data(file_path, min_days=252)

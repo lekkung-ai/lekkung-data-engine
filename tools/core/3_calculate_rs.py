@@ -12,6 +12,7 @@ import pandas as pd
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import HISTORY_DIR, RS_FILE
+from tools.scanner.utils import iter_stock_files
 
 # IBD-proxy RS: 3/6/9/12-month returns weighted 0.4/0.2/0.2/0.2 (latest
 # quarter counts double). Stocks with less than the full 252 days still get
@@ -31,7 +32,7 @@ def calculate_rs():
     rs_data = []
 
     # วนลูปอ่านไฟล์ CSV ในโฟลเดอร์ HISTORY_DIR
-    for file_path in HISTORY_DIR.glob("*.csv"):
+    for file_path in iter_stock_files(HISTORY_DIR):
         ticker = file_path.stem
 
         try:

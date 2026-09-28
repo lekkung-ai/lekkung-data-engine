@@ -29,6 +29,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import HISTORY_DIR, RESULTS_DIR, BREADTH_MIN_HISTORY_DAYS
+from utils import iter_stock_files
 
 BKK_TZ = timezone(timedelta(hours=7))
 CHART_DAYS = 30       # bars kept per ticker - matches SPARKLINE_DAYS convention
@@ -97,7 +98,7 @@ def main():
     print("📊 [TopMoverCharts] กำลังโหลด price history ทั้ง universe...")
     data: dict[str, dict] = {}
     skipped = 0
-    for file_path in sorted(HISTORY_DIR.glob("*.csv")):
+    for file_path in sorted(iter_stock_files(HISTORY_DIR)):
         ticker = file_path.stem.strip()
         try:
             df = load_ticker_ohlc(file_path)

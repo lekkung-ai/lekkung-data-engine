@@ -18,6 +18,7 @@ warnings.filterwarnings('ignore')
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import HISTORY_DIR
+from utils import iter_stock_files
 
 OUTPUT_FILE = Path(__file__).resolve().parents[2] / 'data' / 'results' / 'ppbp_result.csv'
 
@@ -33,7 +34,7 @@ def scan_ppbp():
     print('สแกน Pocket Pivot Buy Point...')
     results = []
 
-    for file_path in sorted(HISTORY_DIR.glob('*.csv')):
+    for file_path in sorted(iter_stock_files(HISTORY_DIR)):
         ticker = file_path.stem
         try:
             df = pd.read_csv(file_path, encoding='utf-8-sig', index_col=0, parse_dates=True)

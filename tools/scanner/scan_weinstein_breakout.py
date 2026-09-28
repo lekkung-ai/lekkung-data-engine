@@ -6,7 +6,7 @@ import pandas as pd
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB, HISTORY_DIR, RESULTS_DIR, WEINSTEIN_SLOPE
-from utils import calculate_adtv, load_full_df
+from utils import calculate_adtv, iter_stock_files, load_full_df
 
 
 def weighted_moving_average(series, n):
@@ -36,7 +36,7 @@ def scan_weinstein_breakout():
     vol_mult = 2.0
     lookback_period = 20
 
-    for file_path in HISTORY_DIR.glob("*.csv"):
+    for file_path in iter_stock_files(HISTORY_DIR):
         ticker = file_path.stem
         try:
             # โหลดข้อมูลรายวัน (Daily)

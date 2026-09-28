@@ -14,6 +14,7 @@ warnings.filterwarnings('ignore')
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import HISTORY_DIR
+from utils import iter_stock_files
 from data_utils import load_close_volume
 
 OUTPUT_FILE = Path(__file__).resolve().parents[2] / 'data' / 'results' / 'stage_all.csv'
@@ -49,7 +50,7 @@ def scan_stage_all():
     print("คำนวณ Stage ทุกหุ้น (ไม่มี ADTV filter)...")
     results = []
 
-    for file_path in sorted(HISTORY_DIR.glob("*.csv")):
+    for file_path in sorted(iter_stock_files(HISTORY_DIR)):
         ticker = file_path.stem
         try:
             loaded = load_close_volume(file_path, min_len=201)

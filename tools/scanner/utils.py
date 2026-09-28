@@ -1,7 +1,18 @@
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Iterator, Optional, Tuple, Union
 
 import pandas as pd
+
+# ไฟล์ใน HISTORY_DIR ที่ไม่ใช่หุ้น (ดัชนี) — 2_download_history.py ยังเขียนไว้ให้
+# calculate_breadth.py อ่านตรงๆ แต่ต้องไม่หลุดเข้า universe ของ RS / scanner
+NON_STOCK_FILES = frozenset({"SET_INDEX.csv"})
+
+
+def iter_stock_files(history_dir: Path) -> Iterator[Path]:
+    """วนไฟล์ *.csv ใน history_dir เฉพาะหุ้น (ข้ามไฟล์ใน NON_STOCK_FILES) ลำดับเดียวกับ glob"""
+    for file_path in history_dir.glob("*.csv"):
+        if file_path.name not in NON_STOCK_FILES:
+            yield file_path
 
 
 def load_price_volume(

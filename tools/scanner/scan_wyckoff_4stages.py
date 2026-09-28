@@ -9,7 +9,7 @@ warnings.filterwarnings("ignore")
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB, HISTORY_DIR, WYCKOFF_FILE
-from utils import calculate_adtv, load_full_df, load_price_volume
+from utils import calculate_adtv, iter_stock_files, load_full_df, load_price_volume
 
 
 def scan_all_4_stages():
@@ -20,7 +20,7 @@ def scan_all_4_stages():
     print("🕵️‍♂️ [Quant Engine] กำลังเอกซเรย์โครงสร้างหุ้น (Wyckoff 4 Stages)...")
     results = []
 
-    for file_path in HISTORY_DIR.glob("*.csv"):
+    for file_path in iter_stock_files(HISTORY_DIR):
         ticker = file_path.stem
         try:
             price_series, vol_series = load_price_volume(file_path, min_length=252)
