@@ -16,10 +16,30 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import SYMBOLS_FILE, DATA_DIR
 
 # Paths for sector_map.json (stockdesk) and universe_ignore.json (data_engine)
-ROOT_DIR = Path(__file__).resolve().parents[4]
-SECTOR_MAP_PATH = ROOT_DIR / "Claude" / "dashboard" / "stockdesk" / "data" / "scans" / "sector_map.json"
 REPO_ROOT = Path(__file__).resolve().parents[2]  # tools/core -> data_engine root
 IGNORE_LIST_PATH = REPO_ROOT / "data" / "scans" / "universe_ignore.json"
+
+# sector_map.json lives in stockdesk - looked up the same way as
+# 4_calculate_sector_rs.py, in the two contexts this script runs in:
+#   - CI (daily-scan.yml): an early sparse-checkout puts it at
+#     data_engine/stockdesk_sector_map_check/ (before run_all.py)
+#   - local dev: stockdesk is a sibling repo checkout on the same machine
+# The old single local-only path silently skipped the union on every CI run.
+SECTOR_MAP_CANDIDATES = [
+    REPO_ROOT / "stockdesk_sector_map_check" / "data" / "scans" / "sector_map.json",
+    REPO_ROOT.parent.parent / "Claude" / "dashboard" / "stockdesk" / "data" / "scans" / "sector_map.json",
+]
+
+
+def resolve_sector_map_path() -> Path:
+    """First existing sector_map.json candidate; exit 1 listing every tried path if none -
+    run_all.py then records this step in failed_steps and the CI job turns red."""
+    for path in SECTOR_MAP_CANDIDATES:
+        if path.exists():
+            return path
+    tried = ", ".join(str(p) for p in SECTOR_MAP_CANDIDATES)
+    print(f"❌ [1_get_symbols] ERROR: sector_map.json not found - tried: {tried}")
+    sys.exit(1)
 
 # TradingView's live scanner is re-queried every run, so its classification
 # can blip for a single run (temporary trading suspension, reclassification
@@ -85,6 +105,9 @@ def load_sector_map_candidates(sector_map_path: Path, ignored_tickers: set) -> s
 
 
 def fetch_active_symbols():
+    # resolve ก่อนเข้า try ด้านล่าง: หาไม่เจอ = exit 1 ทันที (SystemExit ไม่ถูก except Exception กลืน)
+    sector_map_path = resolve_sector_map_path()
+    print(f"🗺️ sector_map: {sector_map_path}")
     print("🔍 กำลังดึงรายชื่อหุ้นจาก TradingView...")
     url = "https://scanner.tradingview.com/thailand/scan"
     payload = {
@@ -110,7 +133,7 @@ def fetch_active_symbols():
 
         # 🤝 Union with sector_map.json (fallback safe)
         ignored_tickers = load_ignored_tickers(IGNORE_LIST_PATH)
-        sector_map_candidates = load_sector_map_candidates(SECTOR_MAP_PATH, ignored_tickers)
+        sector_map_candidates = load_sector_map_candidates(sector_map_path, ignored_tickers)
 
         added_from_sector_map = sorted(sector_map_candidates - fresh_symbols)
         union_count = len(added_from_sector_map)
@@ -153,7 +176,19 @@ def fetch_active_symbols():
             print(f"❌ [1_get_symbols] ERROR: Aborting save! active_symbols count ({total_count}) < 800 (Drop Guard Triggered)")
             return
 
-        df = pd.DataFrame(symbols, columns=["Ticker"])
+        # Source: ที่มาของแต่ละ ticker รอบนี้ — iter_stock_files (tools/scanner/utils.py) ใช้
+        # เลือกเกณฑ์ไฟล์ราคาหยุดนิ่ง: tv / grace = TradingView ยังนับเป็นหุ้น (หลวม 60 วัน),
+        # sector_map = มาจาก union อย่างเดียว (20 วัน) · Ticker และลำดับเหมือนเดิม
+        grace_set = set(grace)
+
+        def source_of(ticker: str) -> str:
+            if ticker in fresh_symbols:
+                return "tv"
+            if ticker in grace_set:
+                return "grace"
+            return "sector_map"
+
+        df = pd.DataFrame({"Ticker": symbols, "Source": [source_of(t) for t in symbols]})
         df.to_csv(SYMBOLS_FILE, index=False)
 
         TRACKER_FILE.parent.mkdir(parents=True, exist_ok=True)
