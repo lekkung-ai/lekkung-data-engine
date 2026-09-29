@@ -141,6 +141,7 @@ def main():
         SCANNER_DIR / "scan_stage_all.py",       # 👈 กู้คืนให้ Vercel
         SCANNER_DIR / "scan_ppbp.py",            # 👈 กู้คืนให้ Vercel
         DATA_DIR / "results" / "convert_to_json.py", # 👈 สร้างไฟล์ JSON สำหรับ Dashboard
+        CORE_DIR / "calculate_sector_flow.py",       # 👈 Sector Flow (volume share + relative strength) for /sector-flow page
         CORE_DIR / "4_calculate_sector_rs.py",
         SCANNER_DIR / "calculate_breadth.py",        # 👈 SET Market Breadth + FTD/DD + sparklines (/breadth page)
         SCANNER_DIR / "build_topmover_charts.py",    # 👈 mini candlestick + EMA200 bundle (/top-movers page)
