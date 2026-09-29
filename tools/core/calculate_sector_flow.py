@@ -11,7 +11,7 @@ Two daily-close based views per subsector (and per sector), SET market only:
      chg_1d/5d = market-cap-weighted group return over the same window
      avg_value_20d = mean daily traded value of the last 20 days (million baht)
 
-2) STRENGTH - group return in excess of the SET index
+2) STRENGTH - group return in excess of the SET index (fallback benchmark: universe cap-weighted return when SET_INDEX.csv is stale)
      Group return is the return of a constant-share basket: shares_i = market_cap_now / Close_now
      (an ESTIMATE - true historical share counts are not available), weight of day t = shares x Close_t.
      ret_1w / ret_1m / ret_3m = 5 / 21 / 63 trading days, excess = group ret - SET ret
@@ -70,7 +70,9 @@ SHORT_WINDOW = 5      # flow_5d
 LOOKBACK = {"1w": 5, "1m": 21, "3m": 63}
 MIN_ACTIVE_TICKERS = 100   # a date counts as a trading day only if this many stocks traded on it
 MIN_HISTORY_DAYS = BASE_WINDOW + SHORT_WINDOW + 1
-MAX_INDEX_LAG_DAYS = 5     # SET_INDEX.csv older than this vs the last trading day = stale benchmark
+MAX_INDEX_LAG_DAYS = 5     # SET_INDEX.csv more than this many business days behind the last trading day = stale
+BENCH_SET = "SET_INDEX"
+BENCH_UNIVERSE = "universe_capweighted"
 
 STATUS_STRONG = "แข็งต่อเนื่อง"
 STATUS_FADING = "เริ่มหมดแรง"
@@ -160,7 +162,8 @@ def index_return(idx_close: pd.Series, days: int) -> Optional[float]:
 
 
 def group_record(close: pd.DataFrame, value: pd.DataFrame, total: pd.Series, shares: pd.Series,
-                 idx_close: pd.Series, tickers: List[str]) -> Dict[str, Any]:
+                 bench: Dict[str, Optional[float]], tickers: List[str]) -> Dict[str, Any]:
+    """bench: benchmark return (%) per LOOKBACK name ('1w' / '1m' / '3m')."""
     rec: Dict[str, Any] = {"n": len(tickers)}
     vg = value[[t for t in tickers if t in value.columns]].sum(axis=1)
     rec.update(compute_flow(vg, total))
@@ -168,9 +171,9 @@ def group_record(close: pd.DataFrame, value: pd.DataFrame, total: pd.Series, sha
     rec["chg_5d"] = basket_return(close, shares, tickers, SHORT_WINDOW)
     for name, days in LOOKBACK.items():
         ret = basket_return(close, shares, tickers, days)
-        bench = index_return(idx_close, days)
+        b = bench.get(name)
         rec[f"ret_{name}"] = ret
-        rec[f"excess_{name}"] = finite_or_none(ret - bench, 2) if ret is not None and bench is not None else None
+        rec[f"excess_{name}"] = finite_or_none(ret - b, 2) if ret is not None and b is not None else None
     rec["status"] = classify_status(rec["excess_3m"], rec["excess_1m"])
     return rec
 
@@ -228,7 +231,8 @@ def load_set_index(history_dir: Path) -> pd.Series:
 
 # ── build ─────────────────────────────────────────────────────────────────────
 
-def build(history_dir: Path, daily_file: Path, sector_map_path: Path) -> Dict[str, Any]:
+def build(history_dir: Path, daily_file: Path, sector_map_path: Path,
+          force_universe_benchmark: bool = False) -> Dict[str, Any]:
     t2s = json.loads(sector_map_path.read_text(encoding="utf-8")).get("ticker_to_sector", {})
     set_tickers = {t.upper(): (v.get("sector") or "", v.get("subsector") or "")
                    for t, v in t2s.items() if v.get("market") == "SET" and v.get("sector")}
@@ -256,15 +260,22 @@ def build(history_dir: Path, daily_file: Path, sector_map_path: Path) -> Dict[st
     last_close = close_f.iloc[-1]
     shares = (caps.reindex(last_close.index) / last_close).replace([np.inf, -np.inf], np.nan).dropna()
     shares = shares[shares > 0]
+    # Benchmark for excess_*: the SET index, unless SET_INDEX.csv is missing / stale (2_download_history.py keeps the
+    # OLD file when Yahoo returns < 200 bars) - then the market-cap-weighted return of the whole universe, same formula
+    # as the groups.
     set_idx = load_set_index(history_dir)
-    if set_idx.empty or set_idx.index.max() < close.index[-1] - pd.Timedelta(days=MAX_INDEX_LAG_DAYS):
-        # 2_download_history.py keeps the OLD SET_INDEX.csv when Yahoo returns < 200 bars, so it can be stale.
-        # Flow is still valid; excess_* / status become null rather than compare against a stale benchmark.
-        logger.warning(f"⚠️ SET_INDEX.csv missing or older than {MAX_INDEX_LAG_DAYS} days vs {close.index[-1].date()} - "
-                       f"excess_* and status will be null")
-        idx_close = pd.Series(np.nan, index=close.index)
+    last_day = close.index[-1]
+    lag = int(np.busday_count(set_idx.index.max().date(), last_day.date())) if not set_idx.empty else None
+    if force_universe_benchmark or lag is None or lag > MAX_INDEX_LAG_DAYS:
+        why = "forced" if force_universe_benchmark else ("missing" if lag is None else f"{lag} business days behind {last_day.date()}")
+        logger.warning(f"⚠️ SET_INDEX.csv unusable ({why}) - benchmark falls back to the market-cap-weighted universe return")
+        benchmark = BENCH_UNIVERSE
+        all_tickers = list(hist)
+        bench = {name: basket_return(close_f, shares, all_tickers, days) for name, days in LOOKBACK.items()}
     else:
+        benchmark = BENCH_SET
         idx_close = set_idx.reindex(close.index).ffill()
+        bench = {name: index_return(idx_close, days) for name, days in LOOKBACK.items()}
 
     tickers_by_sub: Dict[tuple, List[str]] = {}
     tickers_by_sec: Dict[str, List[str]] = {}
@@ -276,11 +287,11 @@ def build(history_dir: Path, daily_file: Path, sector_map_path: Path) -> Dict[st
 
     subsectors = []
     for (sec, sub), tk in sorted(tickers_by_sub.items()):
-        rec = group_record(close_f, value, total, shares, idx_close, tk)
+        rec = group_record(close_f, value, total, shares, bench, tk)
         subsectors.append({"sector": sec, "subsector": sub, **rec})
     sectors = []
     for sec, tk in sorted(tickers_by_sec.items()):
-        sectors.append({"sector": sec, **group_record(close_f, value, total, shares, idx_close, tk)})
+        sectors.append({"sector": sec, **group_record(close_f, value, total, shares, bench, tk)})
 
     as_of = close.index[-1].date().isoformat()
     no_mcap = sorted(t for t in hist if t not in shares.index)
@@ -291,9 +302,10 @@ def build(history_dir: Path, daily_file: Path, sector_map_path: Path) -> Dict[st
             "Daily closes, SET market. flow_1d = group share of total traded value (Close x Volume) today / avg share of "
             "the previous 20 trading days; flow_5d = avg share of last 5 days / avg share of the 20 days before. "
             "value_* / base_value_* = traded value in million baht behind flow_* (today / 5-day daily avg vs the 20-day base). chg_* and ret_* = market-cap-weighted group return (constant-share basket, shares ESTIMATED as "
-            "market_cap_now / Close_now - historical share counts unavailable); excess_* = group ret - SET index ret over "
+            "market_cap_now / Close_now - historical share counts unavailable); excess_* = group ret - benchmark ret (benchmark = SET index, or the whole-universe market-cap-weighted return when SET_INDEX.csv is stale) over "
             "5 / 21 / 63 trading days. status: level = excess_3m, direction = excess_1m. avg_value_20d in million baht."
         ),
+        "benchmark": benchmark,
         "n_stocks": len(hist),
         "n_without_market_cap": len(no_mcap),
         "subsectors": subsectors,
@@ -321,6 +333,7 @@ def main() -> None:
     ap.add_argument("--daily-prices", type=Path, default=DAILY_FILE)
     ap.add_argument("--sector-map", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=OUTPUT_PATH)
+    ap.add_argument("--force-universe-benchmark", action="store_true", help="testing: skip SET_INDEX.csv")
     args = ap.parse_args()
 
     sm_path = resolve_sector_map(args.sector_map)
@@ -333,7 +346,7 @@ def main() -> None:
         logger.error(f"❌ ERROR: {args.daily_prices} not found (needed for Market_Cap)")
         sys.exit(1)
 
-    payload = build(args.history_dir, args.daily_prices, sm_path)
+    payload = build(args.history_dir, args.daily_prices, sm_path, args.force_universe_benchmark)
 
     base_count, base_src = load_baseline_count(sm_path, args.out)
     new_count = len(payload["subsectors"])
