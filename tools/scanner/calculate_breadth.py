@@ -17,13 +17,12 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import json
-import time
 from datetime import datetime, timezone, timedelta
 
 import pandas as pd
-import yfinance as yf
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
+from tools.core.set_index_source import apply_universe_volume, fetch_set_index_ohlc
 from config import (
     HISTORY_DIR,
     RESULTS_DIR,
@@ -98,35 +97,24 @@ def fetch_set_index() -> pd.DataFrame:
             if need.issubset(df.columns) and len(df) >= 200:
                 print(f"  ✓ [Breadth] SET Index จาก SET_INDEX.csv: {len(df)} แท่ง")
                 return df[["Open", "High", "Low", "Close", "Volume"]]
-            print(f"  ⚠️ [Breadth] SET_INDEX.csv ไม่ครบ (rows={len(df)}, cols ขาด) → fallback yfinance")
+            print(f"  ⚠️ [Breadth] SET_INDEX.csv ไม่ครบ (rows={len(df)}, cols ขาด) → fallback set_index_source")
         except Exception as e:
-            print(f"  ⚠️ [Breadth] อ่าน SET_INDEX.csv ไม่ได้: {e} → fallback yfinance")
+            print(f"  ⚠️ [Breadth] อ่าน SET_INDEX.csv ไม่ได้: {e} → fallback set_index_source")
 
-    # fallback: yfinance retry (โค้ดเดิม คงไว้ทั้งหมด)
-    last_err = None
-    for attempt in range(3):
-        try:
-            df = yf.download(
-                SET_INDEX_YF_SYMBOL,
-                period=SET_INDEX_FETCH_PERIOD,
-                interval="1d",
-                auto_adjust=True,
-                progress=False,
-            )
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [c[0] for c in df.columns]
-            df = df.dropna(subset=["Close"]).sort_index()
-            if not df.empty:
-                return df
-            last_err = "empty result"
-        except Exception as e:
-            last_err = str(e)
-        if attempt < 2:
-            wait = 3 * (2 ** attempt)   # 3s, 6s, (12s ถ้ามี attempt 3)
-            print(f"  ⏳ [Breadth] SET Index ดึงไม่ได้ (ครั้งที่ {attempt+1}/3): {last_err} — รอ {wait}s แล้วลองใหม่")
-            time.sleep(wait)
-    print(f"  ❌ [Breadth] SET Index ดึงไม่สำเร็จหลัง retry 3 ครั้ง: {last_err}")
-    return pd.DataFrame()
+    # fallback: ไม่มี/ใช้ SET_INDEX.csv ไม่ได้ → ใช้แหล่งเดียวกับ 2_download_history (set_index_source:
+    # TradingView หลัก) ห้ามดึงเองอีกทาง. Volume = มูลค่าซื้อขายรวม universe เหมือนไฟล์ (ดูหัว set_index_source.py)
+    try:
+        new, source = fetch_set_index_ohlc(None, SET_INDEX_YF_SYMBOL, SET_INDEX_FETCH_PERIOD)
+        if new is None or new.empty:
+            raise RuntimeError("no SET index source available")
+        df, n_vol = apply_universe_volume(new, HISTORY_DIR)
+        if n_vol == 0:
+            raise RuntimeError("universe traded value unavailable")
+        print(f"  ✓ [Breadth] SET Index จาก {source} (ไม่บันทึกไฟล์): {len(df)} แท่ง")
+        return df[["Open", "High", "Low", "Close", "Volume"]]
+    except Exception as e:
+        print(f"  ❌ [Breadth] SET Index ดึงไม่สำเร็จ: {e}")
+        return pd.DataFrame()
 
 
 FTD_DD_RULE_TEXT = (
@@ -267,7 +255,7 @@ def main():
         print("❌ [Breadth] ไม่พบ ticker ที่มีประวัติพอ ข้ามการคำนวณ")
         return
 
-    print(f"📉 [Breadth] กำลังดึง SET Index ({SET_INDEX_YF_SYMBOL}) ผ่าน yfinance...")
+    print(f"📉 [Breadth] กำลังโหลด SET Index ({SET_INDEX_YF_SYMBOL})...")
     set_df = fetch_set_index()
     if set_df.empty:
         print("❌ [Breadth] ดึง SET Index ไม่สำเร็จ ข้ามการคำนวณ")

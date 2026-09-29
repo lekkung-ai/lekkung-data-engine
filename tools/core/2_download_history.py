@@ -19,8 +19,10 @@ import yfinance as yf
 
 try:
     from tools.core.settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
+    from tools.core.set_index_source import update_set_index_csv, update_set_index_volume
 except ImportError:
     from settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
+    from set_index_source import update_set_index_csv, update_set_index_volume
 
 warnings.filterwarnings("ignore")
 
@@ -29,7 +31,8 @@ warnings.filterwarnings("ignore")
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import (CHUNK_SIZE, DAILY_FILE, FUND_WORKERS, HISTORY_DIR,
                     PRICE_FALLBACK_MAX_STALE_BUSINESS_DAYS,
-                    PRICE_FALLBACK_WARN_PCT, SYMBOLS_FILE)
+                    PRICE_FALLBACK_WARN_PCT, SET_INDEX_FETCH_PERIOD,
+                    SET_INDEX_YF_SYMBOL, SYMBOLS_FILE)
 
 RETRY_MAX_TRIES = 2
 RETRY_SLEEP_SEC = 2.0
@@ -310,33 +313,14 @@ def load_stale_fallback(ticker: str, today: date) -> Optional[Dict[str, Any]]:
 
 
 def download_set_index() -> None:
-    """ดึง ^SET.BK แยกต่างหาก เขียน SET_INDEX.csv (สำหรับ breadth)
-    ไม่เข้า daily_snapshot — เป็น index ไม่ใช่หุ้น downstream scanner ไม่ควรเห็น"""
-    import time
-    for attempt in range(3):
-        try:
-            df = yf.download("^SET.BK", period="3y", interval="1d",
-                             auto_adjust=True, progress=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [c[0] for c in df.columns]
-            df = df.dropna(subset=["Close"]).sort_index()
-            if len(df) >= 200:   # ⚠️ ต้องได้ครบ ไม่ใช่แค่ 1 แท่ง (กัน throttle partial)
-                # เพิ่ม SMA/52W ให้ format ตรงกับหุ้น (breadth อ่าน pattern เดียวกัน)
-                df["SMA_50"] = df["Close"].rolling(50).mean().round(2)
-                df["SMA_150"] = df["Close"].rolling(150).mean().round(2)
-                df["SMA_200"] = df["Close"].rolling(200).mean().round(2)
-                df["52W_High"] = df["High"].rolling(252).max().round(2)
-                df["52W_Low"] = df["Low"].rolling(252).min().round(2)
-                save_file = HISTORY_DIR / "SET_INDEX.csv"
-                df.to_csv(save_file)
-                print(f"  ✅ SET_INDEX.csv: {len(df)} แท่ง ({df.index[0].date()} - {df.index[-1].date()})")
-                return
-            print(f"  ⏳ [SET_INDEX] ได้แค่ {len(df)} แท่ง (< 200) ครั้งที่ {attempt+1}/3 — รอ retry")
-        except Exception as e:
-            print(f"  ⏳ [SET_INDEX] ครั้งที่ {attempt+1}/3 fail: {e}")
-        if attempt < 2:
-            time.sleep(3 * (2 ** attempt))   # 3s, 6s
-    print(f"  ⚠️ [SET_INDEX] ดึงไม่ครบหลัง retry 3 ครั้ง — preserve SET_INDEX.csv เดิม (ถ้ามี)")
+    """อัปเดตราคา SET_INDEX.csv (สำหรับ breadth) — TradingView หลัก, Yahoo ต่อท้ายแท่งล่าสุดเป็นตัวสำรอง
+    ไม่เข้า daily_snapshot — เป็น index ไม่ใช่หุ้น downstream scanner ไม่ควรเห็น
+    รายละเอียด/กติกาการเขียนดู tools/core/set_index_source.py
+    คอลัมน์ Volume ใส่ทีหลังใน update_set_index_volume() หลังดาวน์โหลดหุ้นเสร็จ"""
+    try:
+        update_set_index_csv(HISTORY_DIR, SET_INDEX_YF_SYMBOL, SET_INDEX_FETCH_PERIOD)
+    except Exception as e:  # ห้ามให้ดัชนีทำ pipeline ล้ม — ไฟล์เดิมยังอยู่ (เขียนแบบ atomic)
+        print(f"  ❌ ERROR [SET_INDEX] อัปเดตไม่สำเร็จ: {type(e).__name__}: {e} — คงไฟล์เดิม")
 
 
 def download_history_and_build_snapshot() -> None:
@@ -347,7 +331,7 @@ def download_history_and_build_snapshot() -> None:
     df_symbols = pd.read_csv(SYMBOLS_FILE)
     tickers = df_symbols["Ticker"].tolist()
 
-    print("📈 กำลังดึง SET Index (^SET.BK) ก่อน — yfinance ยังไม่โดน rate-limit จากหุ้น...")
+    print("📈 กำลังอัปเดต SET Index (TradingView หลัก / Yahoo สำรอง) ก่อนดาวน์โหลดหุ้น...")
     download_set_index()
 
     print(
@@ -440,6 +424,12 @@ def download_history_and_build_snapshot() -> None:
                 f"not isolated per-ticker flakiness.\n"
                 f"{'='*80}"
             )
+
+    # 📊 Volume ของ SET_INDEX.csv = มูลค่าซื้อขายรวมของ universe — ต้องทำหลังไฟล์หุ้นเขียนครบแล้ว
+    try:
+        update_set_index_volume(HISTORY_DIR)
+    except Exception as e:
+        print(f"  ❌ ERROR [SET_INDEX] ใส่มูลค่าซื้อขายรวมไม่สำเร็จ: {type(e).__name__}: {e}")
 
     print(f"\n🔎 [Phase 2/2] กำลังดึงข้อมูลปัจจัยพื้นฐาน (PE, EPS, ROE)...")
     fundamental_data = {}
