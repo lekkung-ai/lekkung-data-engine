@@ -13,7 +13,7 @@ jobs:
   check-freshness:
     # Guards against a run duplicating a same-day update that's already
     # landed. Supports both 18:11 ICT (market close) and 20:00 ICT (evening wrap-up) runs.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
     steps:
@@ -86,15 +86,20 @@ jobs:
   run-pipeline:
     needs: check-freshness
     if: needs.check-freshness.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - name: Record run start
+        # เวลาเริ่ม job (UTC, ISO 8601) → RUN_START ให้ "Data health check" ท้าย job ใช้
+        # ตรวจว่า generated_at ของ sector_rs / sector_flow เป็นของ run นี้ (H3)
+        run: echo "RUN_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Checkout data_engine repository
         uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -105,7 +110,7 @@ jobs:
           playwright install --with-deps chromium
 
       - name: Cache history data
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: data/history
           key: history-${{ runner.os }}-${{ github.run_id }}
@@ -272,7 +277,7 @@ jobs:
           python -X utf8 scripts/backfill_sector_rs_history.py || echo "backfill_sector_rs_history failed"
 
       - name: Setup Node (for stockdesk type-check)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: 'npm'
@@ -443,3 +448,11 @@ jobs:
               sys.exit(1)
           print("failed_steps: (none)")
           PY
+
+      - name: Data health check
+        # หลัง push data แล้วเสมอ (if: always() + อยู่ท้ายสุด) — อ่านไฟล์ที่ landed จริงบน
+        # stockdesk (origin/main ของ stockdesk_repo) + SET_INDEX.csv / ไฟล์หุ้นใน data/history
+        # ตรวจ H1–H6 (ดู docstring ใน scripts/health_check.py) · print ตารางผลทุกข้อ
+        # · exit 1 เมื่อมีข้อใดไม่ผ่าน → job แดง
+        if: always()
+        run: python scripts/health_check.py --run-start "$RUN_START"
