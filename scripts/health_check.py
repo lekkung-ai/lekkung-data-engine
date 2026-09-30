@@ -13,6 +13,7 @@ working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ข�
   H3  sector_rs.json / sector_flow.json: generated_at เป็นของ run นี้ (>= --run-start =
       RUN_START จาก step "Record run start")
       · sector_flow.as_of = วันอ้างอิง · sector_flow.benchmark = "SET_INDEX"
+      · ถ้า benchmark = "SET_INDEX" วันสุดท้ายของ SET_INDEX.csv ต้อง = sector_flow.as_of
   H4  combined.json: ไม่มี ticker ใน NON_STOCK_FILES · จำนวนแถวต่างจาก commit data ก่อนหน้า
       (commit ก่อนหน้าที่แก้ combined.json) ไม่เกิน ±5%
   H5  ทุก JSON ที่ copy ไป stockdesk รอบนี้: ไม่มี NaN / Infinity
@@ -155,7 +156,7 @@ def check_h2(git: Git, ref: date) -> List[Result]:
     ]
 
 
-def check_h3(git: Git, ref: date, run_start: datetime) -> List[Result]:
+def check_h3(git: Git, history_dir: Path, ref: date, run_start: datetime) -> List[Result]:
     out: List[Result] = []
     data: Dict[str, dict] = {}
     for name in ("sector_rs.json", "sector_flow.json"):
@@ -173,6 +174,12 @@ def check_h3(git: Git, ref: date, run_start: datetime) -> List[Result]:
                 f"as_of={flow.get('as_of')} ref={ref}"))
     out.append(("H3", "sector_flow.benchmark = SET_INDEX", flow.get("benchmark") == "SET_INDEX",
                 f"benchmark={flow.get('benchmark')}"))
+    # เทียบ SET_INDEX ได้เฉพาะเมื่อจบวันเดียวกับข้อมูลหุ้น (calculate_sector_flow.py ต้อง fallback ถ้าไม่ตรง)
+    if flow.get("benchmark") == "SET_INDEX":
+        idx_last = last_csv_date(history_dir / "SET_INDEX.csv")
+        out.append(("H3", "SET_INDEX benchmark: SET_INDEX.csv last date = as_of",
+                    idx_last is not None and idx_last.isoformat() == flow.get("as_of"),
+                    f"SET_INDEX.csv last={idx_last} as_of={flow.get('as_of')}"))
     return out
 
 
@@ -307,7 +314,7 @@ def main() -> int:
     else:
         results += check_h1(args.history_dir, ref)
         results += check_h2(git, ref)
-        results += check_h3(git, ref, run_start)
+        results += check_h3(git, args.history_dir, ref, run_start)
     results += check_h4(git)
     if ref is not None:
         results += check_h5_h6(git, names, ref)
