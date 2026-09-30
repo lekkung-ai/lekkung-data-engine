@@ -3,7 +3,8 @@ health_check.py — ตรวจสุขภาพข้อมูลท้าย
 
 อ่านไฟล์ที่ push ขึ้น stockdesk แล้ว (git show <rev>:<path> ใน stockdesk repo — ไม่แตะ
 working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ของ data_engine แล้ว print ตาราง
-ผลทุกข้อ · exit 1 เมื่อมีข้อใดไม่ผ่าน (job แดง) · exit 0 เมื่อผ่านทุกข้อ
+ผลทุกข้อ · exit 1 เมื่อมีข้อใดไม่ผ่าน (job แดง) · exit 0 เมื่อผ่านทุกข้อ · สถานะ WARN = เตือนอย่างเดียว
+(print + ::warning:: แต่ไม่ทำให้ exit 1)
 
 วันอ้างอิง = วันที่ล่าสุดที่มี Volume > 0 ที่มากที่สุดในไฟล์หุ้น (last_traded_date ตัวเดียวกับ
 ตัวกรองไฟล์ค้าง find_stale_files) — ไม่ใช้วันนี้ เพราะ CI รันวันหยุดด้วย
@@ -18,6 +19,8 @@ working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ข�
       (commit ก่อนหน้าที่แก้ combined.json) ไม่เกิน ±5%
   H5  ทุก JSON ที่ copy ไป stockdesk รอบนี้: ไม่มี NaN / Infinity
   H6  JSON ที่ copy ไป stockdesk รอบนี้: generated_at ไม่เก่ากว่าวันอ้างอิงเกิน 2 วันทำการ
+  H7  (WARN) ticker ใน combined.json ที่ไม่อยู่ใน sector_map.json (ticker_to_sector) — หน้าเว็บ
+      ที่อิง sector (heatmap / Sector Map / S50F) จะไม่เห็นหุ้นตัวนั้น · print รายชื่อ
 
 "JSON ที่ copy ไป stockdesk รอบนี้" = ชื่อไฟล์ *.json ใน --output-dir (data/results/output
 ของ runner ซึ่งสดทุก run เพราะ gitignore) — ตรงกับ step "Copy JSON to stockdesk"
@@ -35,7 +38,7 @@ import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -132,7 +135,9 @@ def last_csv_date(path: Path) -> Optional[date]:
 
 
 # ------------------------------------------------------------------ checks
-Result = Tuple[str, str, bool, str]  # (id, หัวข้อ, ผ่าน, ค่าที่เจอ)
+# ผลของแต่ละข้อ: True = PASS · False = FAIL (exit 1) · WARN = เตือน (ไม่ทำให้ exit 1)
+WARN = "WARN"
+Result = Tuple[str, str, Union[bool, str], str]  # (id, หัวข้อ, ผล, ค่าที่เจอ)
 
 
 def check_h1(history_dir: Path, ref: date) -> List[Result]:
@@ -275,6 +280,19 @@ def check_h5_h6(git: Git, names: List[str], ref: date) -> List[Result]:
     return out
 
 
+def check_h7(git: Git) -> List[Result]:
+    """WARN: ticker ใน combined.json ที่ไม่มีใน sector_map.json (เช่นหุ้นใหม่ / เปลี่ยนชื่อที่ยังไม่ได้จัดกลุ่ม)"""
+    comb_raw, map_raw = git.read(f"{SCANS}/combined.json"), git.read(f"{SCANS}/sector_map.json")
+    if comb_raw is None or map_raw is None:
+        missing = [n for n, r in (("combined.json", comb_raw), ("sector_map.json", map_raw)) if r is None]
+        return [("H7", "combined.json tickers all in sector_map", WARN, f"cannot check - not found: {missing}")]
+    mapped = {str(t).upper() for t in (load_json(map_raw)[0] or {}).get("ticker_to_sector", {})}
+    unmapped = sorted({str(r.get("ticker")) for r in _combined_rows(comb_raw)
+                       if str(r.get("ticker", "")).upper() not in mapped})
+    return [("H7", "combined.json tickers all in sector_map", WARN if unmapped else True,
+             f"not in sector_map ({len(unmapped)}): {unmapped or 'none'}")]
+
+
 # ------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -318,22 +336,28 @@ def main() -> int:
     results += check_h4(git)
     if ref is not None:
         results += check_h5_h6(git, names, ref)
+    results += check_h7(git)
 
     print()
     w = max(len(r[1]) for r in results)
     print(f"{'ID':<4} {'CHECK':<{w}}  {'RESULT':<6}  VALUE")
     print(f"{'-' * 4} {'-' * w}  {'-' * 6}  {'-' * 40}")
     for hid, title, ok, value in results:
-        print(f"{hid:<4} {title:<{w}}  {'PASS' if ok else 'FAIL':<6}  {value}")
+        label = WARN if ok == WARN else ('PASS' if ok else 'FAIL')
+        print(f"{hid:<4} {title:<{w}}  {label:<6}  {value}")
 
-    failed = [r for r in results if not r[2]]
+    warned = [r for r in results if r[2] == WARN]
+    failed = [r for r in results if r[2] is not True and r[2] != WARN]
     print()
+    for hid, title, _, value in warned:
+        print(f"::warning::{hid} {title}: {value}")
     if failed:
         for hid, title, _, value in failed:
             print(f"::error::{hid} {title}: {value}")
         print(f"❌ {len(failed)}/{len(results)} checks failed: {', '.join(sorted({r[0] for r in failed}))}")
         return 1
-    print(f"✅ all {len(results)} checks passed")
+    passed = len(results) - len(warned)
+    print(f"✅ all {passed} checks passed" + (f" · ⚠️ {len(warned)} warning(s): {', '.join(sorted({r[0] for r in warned}))}" if warned else ""))
     return 0
 
 
