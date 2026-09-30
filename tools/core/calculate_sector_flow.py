@@ -11,7 +11,7 @@ Two daily-close based views per subsector (and per sector), SET market only:
      chg_1d/5d = market-cap-weighted group return over the same window
      avg_value_20d = mean daily traded value of the last 20 days (million baht)
 
-2) STRENGTH - group return in excess of the SET index (fallback benchmark: universe cap-weighted return when SET_INDEX.csv is stale)
+2) STRENGTH - group return in excess of the SET index (fallback benchmark: universe cap-weighted return when SET_INDEX.csv does not end on as_of)
      Group return is the return of a constant-share basket: shares_i = market_cap_now / Close_now
      (an ESTIMATE - true historical share counts are not available), weight of day t = shares x Close_t.
      ret_1w / ret_1m / ret_3m = 5 / 21 / 63 trading days, excess = group ret - SET ret
@@ -70,7 +70,6 @@ SHORT_WINDOW = 5      # flow_5d
 LOOKBACK = {"1w": 5, "1m": 21, "3m": 63}
 MIN_ACTIVE_TICKERS = 100   # a date counts as a trading day only if this many stocks traded on it
 MIN_HISTORY_DAYS = BASE_WINDOW + SHORT_WINDOW + 1
-MAX_INDEX_LAG_DAYS = 5     # SET_INDEX.csv more than this many business days behind the last trading day = stale
 BENCH_SET = "SET_INDEX"
 BENCH_UNIVERSE = "universe_capweighted"
 
@@ -260,14 +259,17 @@ def build(history_dir: Path, daily_file: Path, sector_map_path: Path,
     last_close = close_f.iloc[-1]
     shares = (caps.reindex(last_close.index) / last_close).replace([np.inf, -np.inf], np.nan).dropna()
     shares = shares[shares > 0]
-    # Benchmark for excess_*: the SET index, unless SET_INDEX.csv is missing / stale (2_download_history.py keeps the
-    # OLD file when Yahoo returns < 200 bars) - then the market-cap-weighted return of the whole universe, same formula
-    # as the groups.
+    # Benchmark for excess_*: the SET index only when SET_INDEX.csv ends on the same day as the stock data (as_of).
+    # Any mismatch - stale file (2_download_history.py keeps the OLD file when the fetch fails) or an intraday run
+    # (today's unclosed index bar dropped before 17:00 while stock files already have it) - would compare returns
+    # over different dates, so fall back to the market-cap-weighted return of the whole universe, same formula as
+    # the groups.
     set_idx = load_set_index(history_dir)
-    last_day = close.index[-1]
-    lag = int(np.busday_count(set_idx.index.max().date(), last_day.date())) if not set_idx.empty else None
-    if force_universe_benchmark or lag is None or lag > MAX_INDEX_LAG_DAYS:
-        why = "forced" if force_universe_benchmark else ("missing" if lag is None else f"{lag} business days behind {last_day.date()}")
+    last_day = close.index[-1].date()
+    idx_last = set_idx.index.max().date() if not set_idx.empty else None
+    if force_universe_benchmark or idx_last != last_day:
+        why = "forced" if force_universe_benchmark else (
+            "missing" if idx_last is None else f"SET_INDEX.csv last date {idx_last} != stock data as_of {last_day}")
         logger.warning(f"⚠️ SET_INDEX.csv unusable ({why}) - benchmark falls back to the market-cap-weighted universe return")
         benchmark = BENCH_UNIVERSE
         all_tickers = list(hist)
@@ -302,7 +304,7 @@ def build(history_dir: Path, daily_file: Path, sector_map_path: Path,
             "Daily closes, SET market. flow_1d = group share of total traded value (Close x Volume) today / avg share of "
             "the previous 20 trading days; flow_5d = avg share of last 5 days / avg share of the 20 days before. "
             "value_* / base_value_* = traded value in million baht behind flow_* (today / 5-day daily avg vs the 20-day base). chg_* and ret_* = market-cap-weighted group return (constant-share basket, shares ESTIMATED as "
-            "market_cap_now / Close_now - historical share counts unavailable); excess_* = group ret - benchmark ret (benchmark = SET index, or the whole-universe market-cap-weighted return when SET_INDEX.csv is stale) over "
+            "market_cap_now / Close_now - historical share counts unavailable); excess_* = group ret - benchmark ret (benchmark = SET index, or the whole-universe market-cap-weighted return when SET_INDEX.csv does not end on as_of) over "
             "5 / 21 / 63 trading days. status: level = excess_3m, direction = excess_1m. avg_value_20d in million baht."
         ),
         "benchmark": benchmark,
