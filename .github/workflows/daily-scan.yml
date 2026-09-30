@@ -8,6 +8,11 @@ on:
         required: false
         type: boolean
         default: false
+      allow_intraday:
+        description: 'Allow running Mon-Fri before 17:00 ICT (market not closed yet - stock files get unclosed intraday bars). force does NOT bypass this.'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   check-freshness:
@@ -30,6 +35,22 @@ jobs:
       - name: Check if today's data already pushed
         id: check
         run: |
+          # ตลาดยังไม่ปิด (จันทร์–ศุกร์ ก่อน 17:00 ICT) → ข้าม: ไฟล์หุ้นจะได้แท่ง intraday ที่ยังไม่ปิด
+          # แต่ SET_INDEX ตัดแท่งวันนี้ทิ้ง → ข้อมูลคนละวันขึ้น production (เคส 2026-09-30 10:33)
+          # เช็คก่อน force เสมอ: force มีไว้ข้ามเรื่องความสดเท่านั้น · ทางเดียวที่รันก่อน 17:00 ได้คือ allow_intraday
+          # เสาร์–อาทิตย์ตลาดปิดทั้งวัน → ผ่าน
+          BKK_DOW=$(TZ='Asia/Bangkok' date +%u)
+          BKK_HHMM=$(TZ='Asia/Bangkok' date +%H%M)
+          if [ "$BKK_DOW" -le 5 ] && [ "$BKK_HHMM" -lt 1700 ]; then
+            if [ "${{ github.event.inputs.allow_intraday }}" = "true" ]; then
+              echo "allow_intraday=true - running before market close ($(TZ='Asia/Bangkok' date '+%a %Y-%m-%d %H:%M') ICT)."
+            else
+              echo "SKIP: market not closed yet - $(TZ='Asia/Bangkok' date '+%a %Y-%m-%d %H:%M') ICT is a weekday before 17:00 (force does not override this; use allow_intraday=true)."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             echo "force=true - running unconditionally."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
