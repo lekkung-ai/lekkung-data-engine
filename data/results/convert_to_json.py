@@ -20,6 +20,10 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import numpy as np
 
+# data/results -> data_engine root (สำหรับ tools.scanner.utils.load_fund_tickers)
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from tools.scanner.utils import load_fund_tickers  # noqa: E402
+
 # ปรับ path ตรงนี้ให้ตรงกับเครื่องจริง
 INPUT_DIR = Path(__file__).parent          # โฟลเดอร์ที่มีไฟล์ CSV ผลสแกน
 OUTPUT_DIR = Path(__file__).parent / "output"  # โฟลเดอร์ที่จะเก็บไฟล์ JSON ที่แปลงแล้ว
@@ -50,6 +54,11 @@ MIN_UNIVERSE_ROWS = 500
 # เขียน combined ต่อ = RS null / combo เพี้ยน / stage null ทั้งกระดาน หลุด Vercel
 # → skip combined ถ้าตัวใดตัวหนึ่งหาย (คง combined.json เดิม)
 COMBINED_DEPS = {"market_stage", "rs_ranking", "weinstein"}
+
+# RS_Rating ของกองทุน/REIT เป็น null (3_calculate_rs.py) → pandas อ่านคอลัมน์เป็น float
+# (99 → 99.0) · คืนเป็นจำนวนเต็ม + null เหมือนเดิมให้ไฟล์ที่เดิมเป็น int
+# (oliver_kell ไม่อยู่ในนี้ — scan_oliver_kell.py เขียน RS_Rating เป็น float มาแต่เดิม)
+INT_RS_RATING_SCANS = {"rs_ranking", "sepa", "weinstein"}
 
 # หมายเหตุ: ไฟล์ต่อไปนี้ "พักไว้ก่อน" ไม่ใช้ในรอบนี้
 #   - wyckoff_stages.csv           -> logic คนละแบบกับ pine_stages, เก็บไว้เผื่ออนาคตแต่ไม่ใช้เป็น stage หลัก
@@ -90,6 +99,8 @@ def build_individual_jsons() -> dict[str, list[dict]]:
             print(f"  ❌ MISSING GUARD: ไม่พบ {filename} (scan ล่ม/ไม่ได้รัน?) — "
                   f"ข้าม ไม่เขียน {key}.json คงไฟล์เดิม")
             continue
+        if key in INT_RS_RATING_SCANS and "RS_Rating" in df.columns:
+            df["RS_Rating"] = pd.to_numeric(df["RS_Rating"], errors="coerce").round().astype("Int64")
         records = df_to_records(df)
         results[key] = records
         print(f"  ✓ {filename}: {len(records)} แถว")
@@ -263,6 +274,8 @@ def build_combined(individual: dict[str, list[dict]], growth_map: dict[str, dict
     price_map_lekkung = {r["Ticker"]: r["Price"] for r in individual.get("lekkung", []) if "Price" in r}
     price_map_oneil = {r["Ticker"]: r["Price"] for r in individual.get("oneil", []) if "Price" in r}
     rs_map = {r["Ticker"]: r["RS_Rating"] for r in individual.get("rs_ranking", [])}
+    rs_raw_map = {r["Ticker"]: r.get("RS_Raw") for r in individual.get("rs_ranking", [])}
+    fund_tickers = load_fund_tickers()
     price_map_weinstein = {r["Ticker"]: r["Price"] for r in individual.get("weinstein", []) if "Price" in r}
 
     universe = sepa_set | kell_set | breakout_set | lekkung_set | oneil_set | weinstein_set | set(stage_map.keys())
@@ -298,6 +311,8 @@ def build_combined(individual: dict[str, list[dict]], growth_map: dict[str, dict
             "weinstein": ticker in weinstein_set,
             "stage": stage,
             "rs_score": rs_map.get(ticker),
+            "RS_Raw": rs_raw_map.get(ticker),
+            "Is_Fund": str(ticker).upper() in fund_tickers,
             "combo_score": combo_score,
             "growth_yoy": growth_map.get(ticker, {}).get("growth_yoy"),
             "growth_qoq": growth_map.get(ticker, {}).get("growth_qoq"),
