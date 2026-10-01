@@ -13,7 +13,7 @@ import numpy as np
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB, CANSLIM_FILE, DAILY_FILE, HISTORY_DIR, RS_FILE  # type: ignore
-from utils import iter_stock_files, load_full_df, prepare_stock_data  # type: ignore
+from utils import iter_stock_files, load_fund_tickers, load_full_df, prepare_stock_data  # type: ignore
 
 
 def scan_canslim():
@@ -53,8 +53,11 @@ def scan_canslim():
     passed_stocks = []
 
     # 1. วนลูปเช็คข้อมูลเชิงเทคนิคผ่านราคาใน History
+    fund_tickers = load_fund_tickers()
     for file_path in iter_stock_files(HISTORY_DIR):
         ticker = file_path.stem.strip().upper()
+        if ticker.upper() in fund_tickers:  # กองทุน/REIT ไม่เข้า scanner หุ้น
+            continue
         try:
             df_price, adtv_mb = prepare_stock_data(file_path, min_days=252)
             if df_price is None or adtv_mb < ADTV_MIN_MB:
