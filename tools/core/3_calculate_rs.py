@@ -12,7 +12,7 @@ import pandas as pd
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import HISTORY_DIR, RS_FILE
-from tools.scanner.utils import iter_stock_files
+from tools.scanner.utils import iter_stock_files, load_fund_tickers
 
 # IBD-proxy RS: 3/6/9/12-month returns weighted 0.4/0.2/0.2/0.2 (latest
 # quarter counts double). Stocks with less than the full 252 days still get
@@ -79,15 +79,19 @@ def calculate_rs():
         return
 
     df_rs = pd.DataFrame(rs_data)
+    # กองทุน / REIT (sector_map) ไม่ร่วมจัดอันดับ: RS_Rating = null แต่ยังอยู่ในไฟล์พร้อม RS_Raw
+    # (weinstein_stage_analysis.py ใช้รายชื่อในไฟล์นี้เป็น universe)
+    is_fund = df_rs["Ticker"].str.upper().isin(load_fund_tickers())
     # IBD-style 1-99 percentile rank. rank(pct=True) tops out at exactly 1.0
     # for the single highest-ranked stock, which would land on 100 — clip it
     # back down to 99 so the whole scale stays 1-99.
-    raw_rating = df_rs["RS_Raw"].rank(pct=True) * 99 + 1
-    df_rs["RS_Rating"] = raw_rating.round().clip(upper=99).astype(int)
-    df_rs = df_rs.sort_values(by="RS_Rating", ascending=False)
+    raw_rating = df_rs.loc[~is_fund, "RS_Raw"].rank(pct=True) * 99 + 1
+    df_rs["RS_Rating"] = raw_rating.round().clip(upper=99).astype("Int64")
+    df_rs = df_rs.sort_values(by="RS_Rating", ascending=False, na_position="last")
 
     # 🎯 เซฟไฟล์ RS Ranking
-    df_rs[["Ticker", "RS_Rating"]].to_csv(RS_FILE, index=False, encoding="utf-8")
+    df_rs[["Ticker", "RS_Rating", "RS_Raw"]].to_csv(RS_FILE, index=False, encoding="utf-8")
+    print(f"   กองทุน/REIT ไม่จัดอันดับ (RS_Rating = null): {int(is_fund.sum())} ตัว")
     print(f"✅ คำนวณ RS Score เสร็จสิ้น (เซฟลง {RS_FILE.name})")
 
 
