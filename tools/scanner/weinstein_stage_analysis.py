@@ -160,7 +160,7 @@ def run_stage_analysis():
                     "MA10": round(curr["MA10"], 2),
                     "Vol10": round(curr["Vol10"], 0),
                     "Slope_4W_%": round(slope_4w_pct, 2),
-                    "RS_Rating": int(rs_score),
+                    "RS_Rating": int(rs_score) if pd.notna(rs_score) else None,  # กองทุน/REIT: RS null
                     "ADTV(MB)": round(adtv_mb, 1),
                     "PE_Ratio": fund.get("PE_Ratio", 0.0),
                     "ROE": fund.get("ROE", 0.0),
