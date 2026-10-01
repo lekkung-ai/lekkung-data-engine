@@ -10,7 +10,7 @@ warnings.filterwarnings("ignore")
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import (ACCUM_FILE, ADTV_MIN_MB, BASE_WINDOW, FLAT_SLOPE_RANGE,
                     HISTORY_DIR, MAX_BASE_WIDTH, NEAR_BREAK_PCT)
-from utils import calculate_adtv, load_price_volume, iter_stock_files
+from utils import calculate_adtv, load_fund_tickers, load_price_volume, iter_stock_files
 
 
 def scan_accumulation_base():
@@ -23,8 +23,11 @@ def scan_accumulation_base():
     )
     passed_stocks = []
 
+    fund_tickers = load_fund_tickers()
     for file_path in iter_stock_files(HISTORY_DIR):
         ticker = file_path.stem
+        if ticker.upper() in fund_tickers:  # กองทุน/REIT ไม่เข้า scanner หุ้น
+            continue
         try:
             price_series, vol_series = load_price_volume(
                 file_path, min_length=BASE_WINDOW
