@@ -1,6 +1,7 @@
+import json
 from datetime import date
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple, Union
+from typing import Dict, Iterator, List, Optional, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -8,6 +9,41 @@ import pandas as pd
 # ไฟล์ใน HISTORY_DIR ที่ไม่ใช่หุ้น (ดัชนี) — 2_download_history.py ยังเขียนไว้ให้
 # calculate_breadth.py อ่านตรงๆ แต่ต้องไม่หลุดเข้า universe ของ RS / scanner
 NON_STOCK_FILES = frozenset({"SET_INDEX.csv"})
+
+# กองทุนอสังหาฯ / REIT — ยังอยู่ใน universe, scanner ด้าน stage และ combined.json แต่ไม่ถูกจัดอันดับ
+# RS (3_calculate_rs.py) และไม่เข้า scanner หุ้น (sepa / kell / breakout ฯลฯ)
+FUND_SUBSECTOR = "Property Fund & REITs"
+# sector_map.json (stockdesk) — หาแบบเดียวกับ SECTOR_MAP_CANDIDATES ใน 1_get_symbols.py
+# (CI: sparse-checkout stockdesk_sector_map_check/ · local: stockdesk checkout ข้างๆ)
+_DATA_ENGINE_ROOT = Path(__file__).resolve().parents[2]
+SECTOR_MAP_CANDIDATES = [
+    _DATA_ENGINE_ROOT / "stockdesk_sector_map_check" / "data" / "scans" / "sector_map.json",
+    _DATA_ENGINE_ROOT.parent.parent / "Claude" / "dashboard" / "stockdesk" / "data" / "scans" / "sector_map.json",
+]
+
+
+def load_fund_tickers() -> Set[str]:
+    """set ของ ticker (ตัวใหญ่) ที่ sector_map.json จัดเป็น subsector FUND_SUBSECTOR
+
+    หา sector_map ไม่เจอ / อ่านไม่ได้ → log ERROR แล้วคืน set ว่าง (ไม่ทำให้ pipeline พัง —
+    health_check.py H8 จะจับได้จาก combined.json ที่ไม่มี Is_Fund = true)
+    """
+    path = next((p for p in SECTOR_MAP_CANDIDATES if p.exists()), None)
+    if path is None:
+        tried = ", ".join(str(p) for p in SECTOR_MAP_CANDIDATES)
+        print(f"[load_fund_tickers] ERROR: sector_map.json not found - no fund excluded. Tried: {tried}")
+        return set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            t2s = json.load(f).get("ticker_to_sector", {})
+        return {
+            str(t).strip().upper()
+            for t, info in t2s.items()
+            if isinstance(info, dict) and info.get("subsector") == FUND_SUBSECTOR
+        }
+    except Exception as e:  # noqa: BLE001
+        print(f"[load_fund_tickers] ERROR: cannot read {path} ({e}) - no fund excluded")
+        return set()
 
 # ไฟล์ราคาหยุดนิ่ง: หุ้นที่ถูกพัก/เพิกถอนยังค้างไฟล์ใน HISTORY_DIR (stale fallback ของ
 # 2_download_history.py) หรือ Yahoo ยังเติมแท่งวันที่ใหม่ให้แต่ Volume = 0 ทุกแท่ง
