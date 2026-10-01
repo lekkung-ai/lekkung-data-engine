@@ -21,6 +21,9 @@ working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ข�
   H6  JSON ที่ copy ไป stockdesk รอบนี้: generated_at ไม่เก่ากว่าวันอ้างอิงเกิน 2 วันทำการ
   H7  (WARN) ticker ใน combined.json ที่ไม่อยู่ใน sector_map.json (ticker_to_sector) — หน้าเว็บ
       ที่อิง sector (heatmap / Sector Map / S50F) จะไม่เห็นหุ้นตัวนั้น · print รายชื่อ
+  H8  กองทุน/REIT: combined.json มีแถว Is_Fund = true มากกว่า 0 (ไม่มี = load_fund_tickers หา
+      sector_map ไม่เจอ) · และไม่มีกองทุนใน JSON ของ scanner หุ้น (FUND_FREE_SCANS) —
+      กองทุน = Is_Fund ใน combined.json ∪ subsector FUND_SUBSECTOR ใน sector_map.json
 
 "JSON ที่ copy ไป stockdesk รอบนี้" = ชื่อไฟล์ *.json ใน --output-dir (data/results/output
 ของ runner ซึ่งสดทุก run เพราะ gitignore) — ตรงกับ step "Copy JSON to stockdesk"
@@ -48,7 +51,7 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 from config import HISTORY_DIR, RESULTS_DIR  # noqa: E402
-from tools.scanner.utils import NON_STOCK_FILES, last_traded_date  # noqa: E402
+from tools.scanner.utils import FUND_SUBSECTOR, NON_STOCK_FILES, last_traded_date  # noqa: E402
 
 BANGKOK_TZ = timezone(timedelta(hours=7))
 SCANS = "data/scans"
@@ -68,6 +71,9 @@ H6_ALLOWLIST: Dict[str, str] = {}
 DATE_FIELD_FALLBACK = {"nvdr.json": "latest_date"}
 # H6 — ไฟล์ scan ที่เป็น list เปล่า (lekkung.json ฯลฯ) ใช้เวลาใน manifest นี้ (key = ชื่อไฟล์ไม่รวม .json)
 MANIFEST = "generated_at.json"
+# H8 — JSON ของ scanner หุ้น (เลือกหุ้นเข้าซื้อ) ที่ต้องไม่มีกองทุน/REIT · scanner ด้าน stage
+# (market_stage / stage_all / weinstein) ยังมีกองทุนตามปกติ จึงไม่อยู่ในนี้
+FUND_FREE_SCANS = ("sepa.json", "oliver_kell.json", "breakout.json", "ppbp.json", "lekkung.json", "oneil.json")
 
 
 # ------------------------------------------------------------------ helpers
@@ -293,6 +299,36 @@ def check_h7(git: Git) -> List[Result]:
              f"not in sector_map ({len(unmapped)}): {unmapped or 'none'}")]
 
 
+def check_h8(git: Git) -> List[Result]:
+    comb_raw = git.read(f"{SCANS}/combined.json")
+    if comb_raw is None:
+        return [("H8", "combined.json has Is_Fund = true rows", False, "combined.json not found")]
+    rows = _combined_rows(comb_raw)
+    flagged = {str(r.get("ticker")).upper() for r in rows if r.get("Is_Fund") is True}
+    out: List[Result] = [("H8", "combined.json has Is_Fund = true rows", len(flagged) > 0,
+                          f"Is_Fund=true: {len(flagged)} / {len(rows)} rows")]
+
+    map_raw = git.read(f"{SCANS}/sector_map.json")
+    t2s = (load_json(map_raw)[0] or {}).get("ticker_to_sector", {}) if map_raw is not None else {}
+    funds = flagged | {str(t).upper() for t, info in t2s.items()
+                       if isinstance(info, dict) and info.get("subsector") == FUND_SUBSECTOR}
+    hits, missing = [], []
+    for name in FUND_FREE_SCANS:
+        raw = git.read(f"{SCANS}/{name}")
+        if raw is None:
+            missing.append(name)
+            continue
+        d = load_json(raw)[0]
+        recs = d.get("data") or [] if isinstance(d, dict) else d or []
+        found = sorted({str(r.get("Ticker")) for r in recs if str(r.get("Ticker", "")).upper() in funds})
+        if found:
+            hits.append(f"{name}: {found}")
+    out.append(("H8", "no fund/REIT in stock scanner JSON", not hits,
+                f"found={hits or 'none'} · funds known={len(funds)} · "
+                f"checked={len(FUND_FREE_SCANS) - len(missing)} · not found={missing or 'none'}"))
+    return out
+
+
 # ------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -337,6 +373,7 @@ def main() -> int:
     if ref is not None:
         results += check_h5_h6(git, names, ref)
     results += check_h7(git)
+    results += check_h8(git)
 
     print()
     w = max(len(r[1]) for r in results)
