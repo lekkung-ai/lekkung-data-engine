@@ -10,7 +10,7 @@ warnings.filterwarnings("ignore")
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB, HISTORY_DIR, RS_FILE, SEPA_FILE  # type: ignore
-from utils import calculate_adtv, iter_stock_files, load_price_volume, prepare_stock_data  # type: ignore
+from utils import calculate_adtv, iter_stock_files, load_fund_tickers, load_price_volume, prepare_stock_data  # type: ignore
 from vcp import VCP_KEYS, vcp_metrics  # type: ignore
 
 # ── SEPA Fundamental Filter (Phase 3) ────────────────────────────────────────
@@ -95,8 +95,11 @@ def scan_sepa():
         print("❌ ไม่พบโฟลเดอร์ history")
         return
 
+    fund_tickers = load_fund_tickers()
     for file_path in iter_stock_files(HISTORY_DIR):
         ticker = file_path.stem
+        if ticker.upper() in fund_tickers:  # กองทุน/REIT ไม่เข้า scanner หุ้น
+            continue
         try:
             df, adtv_mb = prepare_stock_data(file_path, min_days=250)
             if df is None:
@@ -138,10 +141,12 @@ def scan_sepa():
                 rs_rating = rs_dict.get(ticker.upper(), 0)
 
                 # [Minervini Rule 8] RS Rating must be at least 70
+                # RS null / NaN = ไม่ผ่าน (nan < 70 เป็น False จึงต้องเช็ค >= 70 แทน)
                 try:
-                    if float(rs_rating) < 70:
-                        continue
-                except ValueError:
+                    rs_ok = float(rs_rating) >= 70
+                except (TypeError, ValueError):
+                    rs_ok = False
+                if not rs_ok:
                     continue
 
                 pct_from_high = ((current_price - high_52_week) / high_52_week) * 100
