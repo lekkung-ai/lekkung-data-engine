@@ -16,7 +16,7 @@ if hasattr(sys.stderr, "reconfigure"):
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB, COMBO_FILE, HISTORY_DIR, RS_FILE  # type: ignore
-from utils import calculate_adtv, load_full_df, load_price_volume  # type: ignore
+from utils import calculate_adtv, load_fund_tickers, load_full_df, load_price_volume  # type: ignore
 
 
 def run_combo_scanner():
@@ -34,7 +34,10 @@ def run_combo_scanner():
     print("🚀 [Quant Engine] รันโมเดลผสม (SEPA + Weinstein Stage 2 + RS) ...")
     combo_passed = []
 
+    fund_tickers = load_fund_tickers()
     for ticker, rs_rating in rs_dict.items():
+        if ticker.upper() in fund_tickers:  # กองทุน/REIT ไม่เข้า scanner หุ้น
+            continue
         file_path = HISTORY_DIR / f"{ticker}.csv"
         if not file_path.exists():
             continue
