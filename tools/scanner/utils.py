@@ -155,13 +155,30 @@ def find_stale_files(
     return stale, ref
 
 
-def iter_stock_files(history_dir: Path) -> Iterator[Path]:
+def load_short_history() -> Dict[str, int]:
+    """ticker → จำนวนแถวที่ดาวน์โหลดได้ ของหุ้นประวัติสั้น (IPO) รอบล่าสุด
+    (SHORT_HISTORY_FILE เขียนโดย 2_download_history.py) · ไม่มีไฟล์ / อ่านไม่ได้ → {}"""
+    try:
+        from config import SHORT_HISTORY_FILE
+
+        data = json.loads(SHORT_HISTORY_FILE.read_text(encoding="utf-8"))
+        return {str(t).upper(): int(n) for t, n in (data.get("tickers") or {}).items()}
+    except Exception:
+        return {}
+
+
+def iter_stock_files(history_dir: Path, include_short_history: bool = False) -> Iterator[Path]:
     """วนไฟล์ *.csv ใน history_dir เฉพาะหุ้น ลำดับเดียวกับ glob
 
     ข้ามไฟล์ใน NON_STOCK_FILES และไฟล์ราคาหยุดนิ่ง (ดู find_stale_files) — ถ้าหยุดนิ่ง
     เกิน STALE_MAX_CUT_PCT ของทั้งหมด ถือว่าข้อมูลเสีย ไม่ตัด แล้ว log ERROR
+
+    หุ้นประวัติสั้น (IPO, load_short_history) ไม่ถูกส่งออก — RS / scanner / sector flow เห็น
+    universe เท่าเดิม · stage scanner ส่ง include_short_history=True เพื่อใส่ stage "IPO"
     """
-    files = [p for p in history_dir.glob("*.csv") if p.name not in NON_STOCK_FILES]
+    short = set() if include_short_history else set(load_short_history())
+    files = [p for p in history_dir.glob("*.csv")
+             if p.name not in NON_STOCK_FILES and p.stem.upper() not in short]
     sources, has_source = load_symbol_sources()
     if sources is None:
         print(
