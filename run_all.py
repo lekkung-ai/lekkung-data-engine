@@ -17,7 +17,9 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # 🔌 ดึงพิกัดแผนกต่างๆ มาจาก config
 from config import (AI_AGENTS_DIR, CORE_DIR, LOG_FILE, NEWS_TOOLS_DIR,
-                    SCANNER_DIR, TOOLS_DIR, DATA_DIR, p)
+                    SCANNER_DIR, TOOLS_DIR, DATA_DIR, HISTORY_DIR, p)
+from tools.core.trading_calendar import (SET_INDEX_FILE, is_non_trading_day,
+                                         last_csv_date, reference_date)
 
 # Set up logging
 logging.basicConfig(
@@ -35,6 +37,9 @@ logger = logging.getLogger(__name__)
 # log แล้ว return ทำให้ scan ล่มทั้งตัวก็ยังขึ้น pipeline_status = success
 FAILED_STEPS: list[str] = []
 RUN_STATUS_FILE = DATA_DIR / "results" / "run_status.json"
+BANGKOK_TZ = timezone(timedelta(hours=7))
+# ผลของ non-trading-day guard (mode all) — เขียนลง run_status.json ให้ workflow อ่าน
+NON_TRADING: dict = {"non_trading_day": False}
 
 
 def run_script(script_path: Path) -> None:
@@ -65,6 +70,27 @@ def run_script(script_path: Path) -> None:
     logger.info(f"✅ {script_path.name} ทำงานเสร็จสมบูรณ์")
 
 
+def non_trading_guard() -> bool:
+    """หลัง 2_download_history.py: ตลาดไม่เปิดวันนี้ (เวลาไทย) ไหม — ทั้งไฟล์หุ้น (วันอ้างอิง,
+    Volume > 0) และ SET_INDEX.csv (TradingView ไม่มีแท่งวันหยุด) ไม่มีแท่งของวันนี้
+    ใช้ได้ทั้งวันหยุดวันธรรมดาและเสาร์–อาทิตย์ · ดูเหตุผลที่ต้องดูสองแหล่งใน tools/core/trading_calendar.py"""
+    today = datetime.now(BANGKOK_TZ).date()
+    ref = reference_date(HISTORY_DIR)
+    index_last = last_csv_date(HISTORY_DIR / SET_INDEX_FILE)
+    NON_TRADING.update(today=str(today), reference_date=str(ref), set_index_last=str(index_last))
+    if is_non_trading_day(today, ref, index_last):
+        NON_TRADING["non_trading_day"] = True
+        logger.info("=" * 60)
+        logger.info(f"NON_TRADING_DAY: {today} (ข้อมูลล่าสุด {ref} · SET_INDEX ล่าสุด {index_last})")
+        logger.info("   ข้าม step ที่เหลือทั้งหมด (RS, scan, convert, archive, diff, copy, push) · exit 0")
+        logger.info("=" * 60)
+        return True
+    if ref is not None and ref < today:
+        logger.warning(f"⚠️ ไฟล์หุ้นล่าสุด {ref} < วันนี้ {today} แต่ SET_INDEX มีแท่ง {index_last} — "
+                       "ถือว่าตลาดเปิด (Yahoo อาจช้า) รันต่อตามปกติ")
+    return False
+
+
 def write_run_status(mode: str) -> None:
     """
     เขียนสรุปผลรอบนี้ลง data/results/run_status.json ให้ขั้นตอนถัดไปอ่านต่อได้
@@ -75,6 +101,7 @@ def write_run_status(mode: str) -> None:
         "finished_at": datetime.now(timezone(timedelta(hours=7))).strftime("%Y-%m-%dT%H:%M:%S+07:00"),
         "mode": mode,
         "failed_steps": FAILED_STEPS,
+        **NON_TRADING,
     }
     try:
         RUN_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -102,6 +129,12 @@ def main():
         nargs="?",
         choices=["stock", "scan", "news", "all"],
         help="โหมด: stock, scan, news, หรือ all",
+    )
+
+    parser.add_argument(
+        "--ignore-non-trading-guard",
+        action="store_true",
+        help="mode all: รันครบแม้วันนี้ตลาดไม่เปิด (ปกติจะข้ามหลัง 2_download_history.py)",
     )
 
     args = parser.parse_args()
@@ -158,7 +191,22 @@ def main():
 
     logger.info(f"⚡ โหมดที่เลือก: [{args.mode.upper()}]")
 
-    if args.mode in ["stock", "all"]:
+    if args.mode == "all":
+        # กันวันที่ตลาดไม่เปิด: ดาวน์โหลดก่อน (ต้องใช้ข้อมูลล่าสุดตัดสิน) แล้วค่อยตัดสินใจรันต่อ
+        download_scripts = stock_scripts[:2]  # 1_get_symbols.py, 2_download_history.py
+        for script in download_scripts:
+            run_script(script)
+        if args.ignore_non_trading_guard:
+            logger.info("--ignore-non-trading-guard: ไม่ตรวจวันที่ตลาดไม่เปิด รันครบ")
+        elif "2_download_history.py" in FAILED_STEPS:
+            # ดาวน์โหลดพัง = ไฟล์ค้างของเมื่อวาน ห้ามตีความว่า "ตลาดไม่เปิด" แล้วข้ามเงียบๆ
+            logger.warning("⚠️ 2_download_history.py ล้ม — ไม่ใช้ non-trading guard รอบนี้ รันต่อตามปกติ")
+        elif non_trading_guard():
+            write_run_status(args.mode)
+            return
+        for script in stock_scripts[2:]:
+            run_script(script)
+    elif args.mode == "stock":
         for script in stock_scripts:
             run_script(script)
 
