@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: false
+      ignore_non_trading_guard:
+        description: 'Run everything even if the market was closed today (holiday/weekend). Normally run_all.py stops after the price download with NON_TRADING_DAY.'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   check-freshness:
@@ -195,9 +200,30 @@ jobs:
 
       - name: Run Master Pipeline (all)
         id: run_pipeline
+        # ตลาดไม่เปิดวันนี้ (วันหยุด / เสาร์–อาทิตย์) → run_all.py หยุดหลังดาวน์โหลดราคา
+        # (NON_TRADING_DAY ใน run_status.json) → outputs.non_trading=true → ทุก step ที่เขียน /
+        # push ด้านล่างถูกข้าม · health check ยังรัน (--non-trading-day)
         env:
           STOCKDESK_MACRO_JSON: stockdesk_macro_check/data/scans/macro_commodities.json
-        run: python run_all.py all
+        run: |
+          python run_all.py all ${{ github.event.inputs.ignore_non_trading_guard == 'true' && '--ignore-non-trading-guard' || '' }}
+          python - <<'PY'
+          import json, os
+          from datetime import date
+          try:
+              st = json.load(open("data/results/run_status.json", encoding="utf-8"))
+          except (OSError, ValueError):
+              st = {}
+          skip = bool(st.get("non_trading_day"))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              print(f"non_trading={'true' if skip else 'false'}", file=f)
+          if skip:
+              msg = (f"NON_TRADING_DAY {st.get('today')} - latest stock bar {st.get('reference_date')}, "
+                     f"SET_INDEX {st.get('set_index_last')} - skipped scans/archive/push")
+              # วันธรรมดาที่ไม่มีแท่งเลย = วันหยุด หรือทั้งสองแหล่งค้าง → เตือนให้เห็นบนหน้า run
+              weekday = date.fromisoformat(st["today"]).weekday() < 5 if st.get("today") else False
+              print(f"::warning::{msg}" if weekday else f"::notice::{msg}")
+          PY
 
       - name: Checkout stockdesk repository
         uses: actions/checkout@v6
@@ -207,6 +233,7 @@ jobs:
           path: stockdesk_repo
 
       - name: Check universe drift (Mondays only)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
         # active_symbols.csv was already refreshed fresh by 1_get_symbols.py
         # earlier in this same run_all.py call - this just diffs it against
         # stockdesk_repo's hand-curated sector_map.json (checked out above)
@@ -224,11 +251,13 @@ jobs:
           fi
 
       - name: Copy JSON to stockdesk
+        if: steps.run_pipeline.outputs.non_trading != 'true'
         run: |
           mkdir -p stockdesk_repo/data/scans
           cp -r data/results/output/*.json stockdesk_repo/data/scans/
 
       - name: Fetch IAA research (merges with existing file - no gaps)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
         # Same script the separate 09:45 ICT iaa-research-morning.yml run
         # uses - merge-by-uuid logic means running it again here at 17:30 is
         # safe/idempotent, just picks up whatever's new since the morning run.
@@ -238,6 +267,7 @@ jobs:
             --pages 3 || echo "fetch_iaa_research failed"
 
       - name: Post-process StockDesk data
+        if: steps.run_pipeline.outputs.non_trading != 'true'
         run: |
           DATESTAMP=$(TZ='Asia/Bangkok' date +%Y-%m-%d)
           echo "Processing for date: $DATESTAMP"
@@ -298,6 +328,7 @@ jobs:
           python -X utf8 scripts/backfill_sector_rs_history.py || echo "backfill_sector_rs_history failed"
 
       - name: Setup Node (for stockdesk type-check)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
         uses: actions/setup-node@v5
         with:
           node-version: '20'
@@ -305,6 +336,7 @@ jobs:
           cache-dependency-path: stockdesk_repo/package-lock.json
 
       - name: Type-check stockdesk before push (data-shape guard)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
         id: buildcheck
         # ด่านกัน data shape เพี้ยน (1-row / null ใน field ที่ type เป็น number /
         # type สลับ) หลุดขึ้น production แล้ว Vercel build พัง (เคส 2026-09-02
@@ -333,7 +365,7 @@ jobs:
         # gate: push เฉพาะเมื่อ type-check ผ่าน — ถ้า data shape เพี้ยน step นี้ถูก
         # skip, JSON เดิมใน stockdesk (build ได้) ยืน, pipeline_status ด้านล่างจะ
         # เห็น outcome != success แล้วเขียน failure → stale banner แดงขึ้นเว็บเอง
-        if: steps.buildcheck.outputs.ok == 'true'
+        if: steps.run_pipeline.outputs.non_trading != 'true' && steps.buildcheck.outputs.ok == 'true'
         # safe_push.py handles the news.json two-writers race (auto-merges a
         # conflict there, aborts cleanly on any other conflicted file, and
         # retries a rejected push up to 3x) instead of a plain
@@ -346,6 +378,7 @@ jobs:
           python scripts/safe_push.py --repo . --message "Automated data update from Data Engine" --add-all
 
       - name: Fetch earnings feed (F45 / MD&A / งบการเงิน)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
         # Deliberately placed after the main commit+push above, and isolated
         # with continue-on-error - a failure here (or in the commit step
         # below) can never hold back or fail the scan JSON that already
@@ -358,6 +391,7 @@ jobs:
           python -X utf8 scripts/fetch_earnings.py
 
       - name: Extract earnings reasons (rule-based, no AI)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
         # fetch_earnings.py above fully regenerates earnings_feed.json every
         # run, so this must run every time too or the reason/reason_source
         # fields it wrote last run get silently wiped.
@@ -367,12 +401,14 @@ jobs:
           python -X utf8 scripts/extract_reason.py
 
       - name: Enrich earnings with PEAD (gap & drift)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
         continue-on-error: true
         run: |
           cd stockdesk_repo
           python -X utf8 scripts/enrich_earnings_pead.py
 
       - name: Commit and push earnings feed
+        if: steps.run_pipeline.outputs.non_trading != 'true'
         continue-on-error: true
         run: |
           cd stockdesk_repo
@@ -381,6 +417,7 @@ jobs:
           python scripts/safe_push.py --repo . --message "Update earnings feed" --add public/data/earnings/earnings_feed.json public/data/earnings/reason_cache.json
 
       - name: Commit symbol tracker (data_engine repo)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
         # 1_get_symbols.py updates data/symbol_tracker.json (grace-period
         # state for the universe list) - local housekeeping, not on the
         # critical path. Moved to the very end (after the stockdesk push
@@ -412,7 +449,7 @@ jobs:
         # stockdesk_repo may not exist yet if run_all.py itself failed
         # (the checkout step further up only runs on success), hence the
         # fallback clone.
-        if: always()
+        if: always() && steps.run_pipeline.outputs.non_trading != 'true'
         run: |
           if [ ! -d stockdesk_repo ]; then
             git clone --quiet "https://x-access-token:${{ secrets.DASHBOARD_PAT }}@github.com/lekkung-ai/lekkung-stockdesk.git" stockdesk_repo
@@ -452,7 +489,7 @@ jobs:
         # failed, instead of it only surfacing as failed_steps in the JSON
         # (4_calculate_sector_rs.py failed silently every run for 5 weeks).
         # No pipeline_status.json at all means the pipeline didn't really run.
-        if: always()
+        if: always() && steps.run_pipeline.outputs.non_trading != 'true'
         run: |
           STATUS_FILE=stockdesk_repo/public/data/pipeline_status.json
           if [ ! -f "$STATUS_FILE" ]; then
@@ -476,4 +513,4 @@ jobs:
         # ตรวจ H1–H6 (ดู docstring ใน scripts/health_check.py) · print ตารางผลทุกข้อ
         # · exit 1 เมื่อมีข้อใดไม่ผ่าน → job แดง
         if: always()
-        run: python scripts/health_check.py --run-start "$RUN_START"
+        run: python scripts/health_check.py --run-start "$RUN_START" ${{ steps.run_pipeline.outputs.non_trading == 'true' && '--non-trading-day' || '' }}
