@@ -27,6 +27,10 @@ working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ข�
   H9  public/data/news_flags.json (ป้ายข่าวบนหน้า scan · เขียนโดย stockdesk news-fetch.yml):
       มีไฟล์ · generated_at ไม่เก่ากว่าวันอ้างอิงเกิน NEWS_FLAGS_MAX_BUSINESS_DAYS วันทำการ
 
+วันที่ตลาดไม่เปิด (--non-trading-day = run_all.py ข้ามทั้งรอบ "NON_TRADING_DAY"): ไม่มีอะไรถูก
+copy / push ในรอบนั้น → ข้อที่เทียบกับ "run นี้" (H3 generated_at ของ run นี้, H5/H6 JSON ที่ copy
+รอบนี้) ถูกข้าม · ข้ออื่นตรวจตามปกติกับไฟล์บน origin (ซึ่งยังเป็นของวันทำการล่าสุด = วันอ้างอิง)
+
 "JSON ที่ copy ไป stockdesk รอบนี้" = ชื่อไฟล์ *.json ใน --output-dir (data/results/output
 ของ runner ซึ่งสดทุก run เพราะ gitignore) — ตรงกับ step "Copy JSON to stockdesk"
 
@@ -53,7 +57,8 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 from config import HISTORY_DIR, RESULTS_DIR  # noqa: E402
-from tools.scanner.utils import FUND_SUBSECTOR, NON_STOCK_FILES, last_traded_date  # noqa: E402
+from tools.core.trading_calendar import last_csv_date, reference_date  # noqa: E402
+from tools.scanner.utils import FUND_SUBSECTOR, NON_STOCK_FILES  # noqa: E402
 
 BANGKOK_TZ = timezone(timedelta(hours=7))
 SCANS = "data/scans"
@@ -120,30 +125,6 @@ def to_bkk_date(ts: str) -> date:
 
 def busdays(d: date, ref: date) -> int:
     return int(np.busday_count(d, ref))
-
-
-def reference_date(history_dir: Path) -> Optional[date]:
-    """วันอ้างอิง = max(last_traded_date) ของไฟล์หุ้น (ไม่รวม NON_STOCK_FILES) — เหมือน find_stale_files"""
-    days = [
-        d
-        for p in history_dir.glob("*.csv")
-        if p.name not in NON_STOCK_FILES and (d := last_traded_date(p)) is not None
-    ]
-    return max(days) if days else None
-
-
-def last_csv_date(path: Path) -> Optional[date]:
-    """วันที่ของแถวข้อมูลแถวสุดท้าย (คอลัมน์แรก) ของ CSV"""
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    for line in reversed(lines):
-        try:
-            return date.fromisoformat(line.split(",", 1)[0].strip()[:10])
-        except ValueError:
-            continue
-    return None
 
 
 # ------------------------------------------------------------------ checks
@@ -363,6 +344,8 @@ def main() -> int:
     ap.add_argument("--run-start",
                     help="ISO time this run started - daily-scan.yml passes $RUN_START "
                          "(missing/empty: fall back to mtime of run_all.py + WARNING)")
+    ap.add_argument("--non-trading-day", action="store_true",
+                    help="run_all.py skipped this run (NON_TRADING_DAY): skip H3/H5/H6, which check this run's output")
     args = ap.parse_args()
 
     if args.run_start:
@@ -383,6 +366,8 @@ def main() -> int:
     print(f"reference date (latest Volume>0 bar across stock files): {ref}")
     print(f"run start: {run_start.isoformat(timespec='seconds')} (from {run_start_src})")
     print(f"copied JSON this run ({len(names)}): {', '.join(names) or '-'}")
+    if args.non_trading_day:
+        print("NON_TRADING_DAY run: nothing was copied or pushed - H3/H5/H6 (this run's output) skipped")
 
     results: List[Result] = []
     if ref is None:
@@ -390,9 +375,10 @@ def main() -> int:
     else:
         results += check_h1(args.history_dir, ref)
         results += check_h2(git, ref)
-        results += check_h3(git, args.history_dir, ref, run_start)
+        if not args.non_trading_day:
+            results += check_h3(git, args.history_dir, ref, run_start)
     results += check_h4(git)
-    if ref is not None:
+    if ref is not None and not args.non_trading_day:
         results += check_h5_h6(git, names, ref)
     results += check_h7(git)
     results += check_h8(git)
