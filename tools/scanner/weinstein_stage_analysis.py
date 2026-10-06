@@ -9,8 +9,8 @@ warnings.filterwarnings("ignore")
 
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
-from config import ADTV_MIN_MB, HISTORY_DIR, RESULTS_DIR, RS_FILE, DAILY_FILE
-from tools.scanner.utils import load_full_df, calculate_adtv
+from config import ADTV_MIN_MB, HISTORY_DIR, IPO_STAGE, RESULTS_DIR, RS_FILE, DAILY_FILE
+from tools.scanner.utils import load_full_df, calculate_adtv, load_short_history
 
 def run_stage_analysis():
     output_path = RESULTS_DIR / "weinstein_stages_result.csv"
@@ -24,6 +24,8 @@ def run_stage_analysis():
         df_rs = pd.read_csv(RS_FILE)
         rs_dict = dict(zip(df_rs["Ticker"], df_rs["RS_Rating"]))
         tickers = df_rs["Ticker"].astype(str).str.upper().tolist()
+        # หุ้นประวัติสั้น (IPO) ไม่มี RS → เพิ่มท้ายรายชื่อ ได้ stage "IPO" (ไม่เดา)
+        tickers += [t for t in sorted(load_short_history()) if t not in set(tickers)]
     except Exception as e:
         print(f"❌ เกิดข้อผิดพลาดในการอ่านไฟล์ RS Ranking: {e}")
         return
@@ -79,12 +81,13 @@ def run_stage_analysis():
             )
 
             if len(df_weekly) < 35: # ต้องการอย่างน้อย 30 สัปดาห์สำหรับ MA30
-                stage = "Unknown"
+                # ประวัติสั้น (IPO): ยังคำนวณ MA30 ไม่ได้ → stage "IPO" + ตัวชี้วัดเป็น null (เดิม Unknown + 0)
+                stage = IPO_STAGE
                 curr_price = df_weekly.iloc[-1]["Close"] if not df_weekly.empty else df_daily.iloc[-1]["Close"]
-                ma30 = 0
-                slope_4w_pct = 0
-                rs_score = rs_dict.get(ticker, 0)
-                curr = {"MA10": 0, "Vol10": 0}
+                ma30 = None
+                slope_4w_pct = None
+                rs_score = rs_dict.get(ticker)
+                curr = {"MA10": None, "Vol10": None}
             else:
                 # คำนวณ 30-Week MA และ 10-Week MA
                 df_weekly["MA30"] = df_weekly["Close"].rolling(window=30).mean()
@@ -156,10 +159,10 @@ def run_stage_analysis():
                     "Ticker": ticker,
                     "Stage": stage,
                     "Price": round(curr_price, 2),
-                    "MA30": round(ma30, 2),
-                    "MA10": round(curr["MA10"], 2),
-                    "Vol10": round(curr["Vol10"], 0),
-                    "Slope_4W_%": round(slope_4w_pct, 2),
+                    "MA30": round(ma30, 2) if ma30 is not None else None,
+                    "MA10": round(curr["MA10"], 2) if curr["MA10"] is not None else None,
+                    "Vol10": round(curr["Vol10"], 0) if curr["Vol10"] is not None else None,
+                    "Slope_4W_%": round(slope_4w_pct, 2) if slope_4w_pct is not None else None,
                     "RS_Rating": int(rs_score) if pd.notna(rs_score) else None,  # กองทุน/REIT: RS null
                     "ADTV(MB)": round(adtv_mb, 1),
                     "PE_Ratio": fund.get("PE_Ratio", 0.0),
