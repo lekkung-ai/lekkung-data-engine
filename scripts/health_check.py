@@ -24,6 +24,8 @@ working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ข�
   H8  กองทุน/REIT: combined.json มีแถว Is_Fund = true มากกว่า 0 (ไม่มี = load_fund_tickers หา
       sector_map ไม่เจอ) · และไม่มีกองทุนใน JSON ของ scanner หุ้น (FUND_FREE_SCANS) —
       กองทุน = Is_Fund ใน combined.json ∪ subsector FUND_SUBSECTOR ใน sector_map.json
+  H9  public/data/news_flags.json (ป้ายข่าวบนหน้า scan · เขียนโดย stockdesk news-fetch.yml):
+      มีไฟล์ · generated_at ไม่เก่ากว่าวันอ้างอิงเกิน NEWS_FLAGS_MAX_BUSINESS_DAYS วันทำการ
 
 "JSON ที่ copy ไป stockdesk รอบนี้" = ชื่อไฟล์ *.json ใน --output-dir (data/results/output
 ของ runner ซึ่งสดทุก run เพราะ gitignore) — ตรงกับ step "Copy JSON to stockdesk"
@@ -71,6 +73,10 @@ H6_ALLOWLIST: Dict[str, str] = {}
 DATE_FIELD_FALLBACK = {"nvdr.json": "latest_date"}
 # H6 — ไฟล์ scan ที่เป็น list เปล่า (lekkung.json ฯลฯ) ใช้เวลาใน manifest นี้ (key = ชื่อไฟล์ไม่รวม .json)
 MANIFEST = "generated_at.json"
+
+# H9 — ป้ายข่าวบนหน้า scan (stockdesk scripts/build_news_flags.py ใน news-fetch.yml)
+NEWS_FLAGS = "public/data/news_flags.json"
+NEWS_FLAGS_MAX_BUSINESS_DAYS = 1
 # H8 — JSON ของ scanner หุ้น (เลือกหุ้นเข้าซื้อ) ที่ต้องไม่มีกองทุน/REIT · scanner ด้าน stage
 # (market_stage / stage_all / weinstein) ยังมีกองทุนตามปกติ จึงไม่อยู่ในนี้
 FUND_FREE_SCANS = ("sepa.json", "oliver_kell.json", "breakout.json", "ppbp.json", "lekkung.json", "oneil.json")
@@ -329,6 +335,22 @@ def check_h8(git: Git) -> List[Result]:
     return out
 
 
+def check_h9(git: Git, ref: date) -> List[Result]:
+    title = f"news_flags.json not older than {NEWS_FLAGS_MAX_BUSINESS_DAYS} business day vs ref"
+    raw = git.read(NEWS_FLAGS)
+    if raw is None:
+        return [("H9", title, False, f"{NEWS_FLAGS} not found")]
+    try:
+        d = load_json(raw)[0]
+        gen = to_bkk_date(d["generated_at"])
+    except (ValueError, UnicodeDecodeError, KeyError, TypeError) as e:
+        return [("H9", title, False, f"no readable generated_at ({e.__class__.__name__})")]
+    age = busdays(gen, ref)
+    return [("H9", title, age <= NEWS_FLAGS_MAX_BUSINESS_DAYS,
+             f"generated_at={d['generated_at']} ({gen}, {age} bdays before ref {ref}) · "
+             f"tickers={len(d.get('flags') or {})}")]
+
+
 # ------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -374,6 +396,8 @@ def main() -> int:
         results += check_h5_h6(git, names, ref)
     results += check_h7(git)
     results += check_h8(git)
+    if ref is not None:
+        results += check_h9(git, ref)
 
     print()
     w = max(len(r[1]) for r in results)
