@@ -20,9 +20,11 @@ import yfinance as yf
 try:
     from tools.core.settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
     from tools.core.set_index_source import update_set_index_csv, update_set_index_volume
+    from tools.core.trading_calendar import SET_INDEX_FILE, drop_dates, holiday_dates, index_dates
 except ImportError:
     from settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
     from set_index_source import update_set_index_csv, update_set_index_volume
+    from trading_calendar import SET_INDEX_FILE, drop_dates, holiday_dates, index_dates
 
 warnings.filterwarnings("ignore")
 
@@ -212,6 +214,50 @@ def business_days_between(d1: date, d2: date) -> int:
     return count
 
 
+def add_indicator_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """SMA 50/150/200 + 52W High/Low on a copy of an OHLCV frame (written into the history file)."""
+    df = df.copy()
+    df["SMA_50"] = df["Close"].rolling(window=50).mean().round(2)
+    df["SMA_150"] = df["Close"].rolling(window=150).mean().round(2)
+    df["SMA_200"] = df["Close"].rolling(window=200).mean().round(2)
+    # True 52-week high/low uses the day's actual intraday High/Low, not
+    # the closing price - a Close-based rolling max can never be exceeded
+    # by that same day's own Close, which made "at the 52W high" trivially
+    # true for any stock closing at a multi-month high and inflated the
+    # scanner's "NH" (near-high) badge across an implausibly large share
+    # of the universe on ordinary days.
+    df["52W_High"] = df["High"].rolling(window=252).max().round(2)
+    df["52W_Low"] = df["Low"].rolling(window=252).min().round(2)
+    return df
+
+
+def drop_holiday_rows_from_files(holidays, skip: set) -> Tuple[int, int]:
+    """ตัดแถววันหยุดออกจากไฟล์หุ้นที่รอบนี้ไม่ได้เขียนใหม่ (stale fallback / ticker ที่หลุด universe)
+    แล้วคำนวณคอลัมน์ SMA/52W ใหม่ · ไม่แตะ SET_INDEX.csv · คืน (จำนวนไฟล์, จำนวนแถว) ที่ตัด"""
+    if not holidays:
+        return 0, 0
+    files = rows = 0
+    for path in HISTORY_DIR.glob("*.csv"):
+        if path.name == SET_INDEX_FILE or path.stem in skip:
+            continue
+        try:
+            df = pd.read_csv(path, index_col=0, parse_dates=True)
+        except Exception as e:  # ไฟล์เสีย — ปล่อยไว้ให้ fallback / stale filter จัดการเหมือนเดิม
+            print(f"   ⚠️ [Holiday] อ่าน {path.name} ไม่ได้ ({type(e).__name__}) — ข้าม")
+            continue
+        if not isinstance(df.index, pd.DatetimeIndex):
+            continue
+        cleaned = drop_dates(df, holidays)
+        if len(cleaned) == len(df):
+            continue
+        if {"Close", "High", "Low"} <= set(cleaned.columns):
+            cleaned = add_indicator_columns(cleaned)
+        cleaned.to_csv(path)
+        files += 1
+        rows += len(df) - len(cleaned)
+    return files, rows
+
+
 def build_snapshot_row(ticker: str, df: pd.DataFrame, data_date: str, fallback: bool) -> Optional[Dict[str, Any]]:
     """Compute technical columns + build the daily_snapshot row dict for one
     ticker's OHLCV dataframe. Used for both freshly-downloaded data and
@@ -224,18 +270,7 @@ def build_snapshot_row(ticker: str, df: pd.DataFrame, data_date: str, fallback: 
         last_row = df.iloc[-1]
         prev_row = df.iloc[-2]
     else:
-        df = df.copy()
-        df["SMA_50"] = df["Close"].rolling(window=50).mean().round(2)
-        df["SMA_150"] = df["Close"].rolling(window=150).mean().round(2)
-        df["SMA_200"] = df["Close"].rolling(window=200).mean().round(2)
-        # True 52-week high/low uses the day's actual intraday High/Low, not
-        # the closing price - a Close-based rolling max can never be exceeded
-        # by that same day's own Close, which made "at the 52W high" trivially
-        # true for any stock closing at a multi-month high and inflated the
-        # scanner's "NH" (near-high) badge across an implausibly large share
-        # of the universe on ordinary days.
-        df["52W_High"] = df["High"].rolling(window=252).max().round(2)
-        df["52W_Low"] = df["Low"].rolling(window=252).min().round(2)
+        df = add_indicator_columns(df)
         save_file = HISTORY_DIR / f"{ticker}.csv"
         df.to_csv(save_file)
         last_row = df.iloc[-1]
@@ -342,6 +377,7 @@ def download_history_and_build_snapshot() -> None:
     success_count = 0
     valid_tickers = []
     chunk_failed_all: List[str] = []
+    fresh: Dict[str, pd.DataFrame] = {}  # ticker -> ราคาที่โหลดสำเร็จรอบนี้ (ยังไม่เขียนไฟล์)
     today = datetime.now().date()
 
     for i in range(0, len(tickers), CHUNK_SIZE):
@@ -372,13 +408,7 @@ def download_history_and_build_snapshot() -> None:
                     df = data.dropna(subset=["Close"])
 
                 if len(df) >= 200:
-                    row = build_snapshot_row(ticker, df, today.strftime("%Y-%m-%d"), fallback=False)
-                    if row is not None:
-                        daily_snapshot.append(row)
-                        valid_tickers.append(ticker)
-                        success_count += 1
-                    else:
-                        chunk_failed_all.append(ticker)
+                    fresh[ticker] = df
                 else:
                     chunk_failed_all.append(ticker)
             except Exception as e:
@@ -392,17 +422,38 @@ def download_history_and_build_snapshot() -> None:
     # history file rather than dropping it from daily_prices.csv outright.
     fallback_tickers: List[str] = []
     dropped_tickers: List[str] = []
+    still_failed: List[str] = []
     if chunk_failed_all:
         print(f"\n🔁 [Retry] {len(chunk_failed_all)} ticker(s) failed bulk download, retrying individually...")
         for ticker in chunk_failed_all:
             retry_df = retry_single_ticker_download(ticker)
             if retry_df is not None:
-                row = build_snapshot_row(ticker, retry_df, today.strftime("%Y-%m-%d"), fallback=False)
-                if row is not None:
-                    daily_snapshot.append(row)
-                    valid_tickers.append(ticker)
-                    success_count += 1
-                    continue
+                fresh[ticker] = retry_df
+            else:
+                still_failed.append(ticker)
+
+    # 🗓️ [Holiday] Yahoo ใส่แถววันหยุด (Volume 0, ราคาเดิม) มาทุกครั้งที่ดาวน์โหลด — ตัดออกก่อนเขียน
+    # (นิยาม + เหตุผลที่ต้องเทียบ SET_INDEX ดู tools/core/trading_calendar.py)
+    holidays = holiday_dates(fresh, index_dates(HISTORY_DIR / SET_INDEX_FILE))
+    if holidays:
+        print(f"\n🗓️ [Holiday] ตัดแถววันที่ตลาดไม่เปิด {len(holidays)} วัน: {', '.join(sorted(map(str, holidays)))}")
+
+    for ticker, df in fresh.items():
+        row = build_snapshot_row(ticker, drop_dates(df, holidays), today.strftime("%Y-%m-%d"), fallback=False)
+        if row is not None:
+            daily_snapshot.append(row)
+            valid_tickers.append(ticker)
+            success_count += 1
+        else:
+            still_failed.append(ticker)
+
+    # ไฟล์ที่รอบนี้ไม่ได้เขียนใหม่ (stale fallback / ticker ที่หลุด universe) ก็ต้องไม่มีแถววันหยุดค้าง
+    cleaned_files, cleaned_rows = drop_holiday_rows_from_files(holidays, skip=set(fresh))
+    if cleaned_files:
+        print(f"   🗓️ [Holiday] ไฟล์ที่ไม่ได้โหลดใหม่: ตัด {cleaned_rows} แถวจาก {cleaned_files} ไฟล์")
+
+    if still_failed:
+        for ticker in still_failed:
             fb_row = load_stale_fallback(ticker, today)
             if fb_row is not None:
                 daily_snapshot.append(fb_row)
