@@ -13,7 +13,7 @@ from pathlib import Path
 warnings.filterwarnings('ignore')
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
-from config import HISTORY_DIR
+from config import HISTORY_DIR, IPO_STAGE
 from utils import iter_stock_files
 from data_utils import load_close_volume
 
@@ -50,13 +50,23 @@ def scan_stage_all():
     print("คำนวณ Stage ทุกหุ้น (ไม่มี ADTV filter)...")
     results = []
 
-    for file_path in sorted(iter_stock_files(HISTORY_DIR)):
+    for file_path in sorted(iter_stock_files(HISTORY_DIR, include_short_history=True)):
         ticker = file_path.stem
         try:
-            loaded = load_close_volume(file_path, min_len=201)
+            loaded = load_close_volume(file_path, min_len=1)
             if loaded is None:
                 continue
             p_series, _ = loaded
+            if len(p_series) < 201:
+                # ประวัติสั้น (IPO): เดิมถูกตัดทิ้ง → ใส่ stage "IPO" (ไม่เดา) + ราคา / Chg30D ถ้าคำนวณได้
+                last = len(p_series) - 1
+                chg30d = None
+                if last >= 30 and float(p_series.iloc[last - 30]) > 0:
+                    p_30d = float(p_series.iloc[last - 30])
+                    chg30d = round(((float(p_series.iloc[last]) - p_30d) / p_30d) * 100, 2)
+                results.append({"Ticker": ticker, "Stage": IPO_STAGE,
+                                "Price": round(p_series.iloc[last], 2), "Chg30D": chg30d})
+                continue
 
             e15 = tv_ema(p_series, 15)
             e50 = tv_ema(p_series, 50)
