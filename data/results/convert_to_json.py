@@ -23,6 +23,7 @@ import numpy as np
 # data/results -> data_engine root (สำหรับ tools.scanner.utils.load_fund_tickers)
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from tools.scanner.utils import load_fund_tickers  # noqa: E402
+from config import HISTORY_DIR, IPO_STAGE, NEW_LISTING_DAYS  # noqa: E402
 
 # ปรับ path ตรงนี้ให้ตรงกับเครื่องจริง
 INPUT_DIR = Path(__file__).parent          # โฟลเดอร์ที่มีไฟล์ CSV ผลสแกน
@@ -245,6 +246,17 @@ def enrich_market_stage(records: list[dict], fund_map: dict[str, dict]) -> list[
     return enriched
 
 
+def history_days(ticker: str) -> int | None:
+    """จำนวนแถวราคา (วันทำการ) ในไฟล์ history ของ ticker · ไม่มีไฟล์ → None
+    นับเฉพาะบรรทัดที่ขึ้นต้นด้วยวันที่ (รองรับหัวตาราง 2-3 ชั้นของ yfinance)"""
+    path = HISTORY_DIR / f"{ticker}.csv"
+    try:
+        with open(path, encoding="utf-8") as f:
+            return sum(1 for line in f if line[:4].isdigit())
+    except OSError:
+        return None
+
+
 def build_combined(individual: dict[str, list[dict]], growth_map: dict[str, dict]) -> list[dict]:
     """
     รวมผลทุก scan เป็นตารางเดียวต่อ 1 ticker (สำหรับหน้า Scanner 'ทั้งหมด')
@@ -255,7 +267,8 @@ def build_combined(individual: dict[str, list[dict]], growth_map: dict[str, dict
     breakout_set = {r["Ticker"] for r in individual.get("breakout", [])}
     lekkung_set = {r["Ticker"] for r in individual.get("lekkung", [])}
     oneil_set = {r["Ticker"] for r in individual.get("oneil", [])}
-    weinstein_set = {r["Ticker"] for r in individual.get("weinstein", [])}
+    # แถว stage "IPO" (ประวัติสั้น ไม่มี MA30) ไม่ใช่ผล Weinstein — ไม่นับเป็น flag / combo
+    weinstein_set = {r["Ticker"] for r in individual.get("weinstein", []) if r.get("Stage") != IPO_STAGE}
 
     # ADTV floor ไม่ใช่ confluence axis เดียวกับ combo_score — หุ้น low-liquidity
     # ที่ผ่าน sepa/kell ยัง +1 คะแนนเหมือนเดิม (combo_score ไม่เปลี่ยน) แค่ propagate
@@ -317,6 +330,8 @@ def build_combined(individual: dict[str, list[dict]], growth_map: dict[str, dict
             "growth_yoy": growth_map.get(ticker, {}).get("growth_yoy"),
             "growth_qoq": growth_map.get(ticker, {}).get("growth_qoq"),
             "Low_Liquidity": ticker in low_liquidity_set,
+            "History_Days": (hd := history_days(ticker)),
+            "Is_New_Listing": hd is not None and hd < NEW_LISTING_DAYS,
         })
 
     # เรียงตาม combo_score มาก -> น้อย แล้วตาม rs_score มาก -> น้อย
