@@ -9,8 +9,10 @@ warnings.filterwarnings("ignore")
 
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
-from config import ADTV_MIN_MB, HISTORY_DIR, PINE_STAGES_FILE
+from config import ADTV_MIN_MB, HISTORY_DIR, IPO_STAGE, PINE_STAGES_FILE
 from utils import calculate_adtv, load_price_volume, iter_stock_files
+
+EMA200_MIN_BARS = 200  # tv_ema(…, 200) ต้องมีอย่างน้อยเท่านี้ — น้อยกว่า = ยังคำนวณ stage ไม่ได้ (IPO)
 
 
 def tv_ema(series, length):
@@ -51,7 +53,8 @@ def scan_pine_script_stages():
     print("🕵️‍♂️ [Quant Engine] กำลังคำนวณ Market Stage (Pine Script Logic)...")
     results = []
 
-    for file_path in iter_stock_files(HISTORY_DIR):
+    # รวมหุ้นประวัติสั้น (IPO) ด้วย — stage = "IPO" แทนการเดา
+    for file_path in iter_stock_files(HISTORY_DIR, include_short_history=True):
         ticker = file_path.stem
         try:
             p_series, v_series = load_price_volume(file_path, min_length=1)
@@ -71,6 +74,8 @@ def scan_pine_script_stages():
                 ema_50.iloc[idx_last],
                 ema_200.iloc[idx_last],
             )
+            if len(p_series) < EMA200_MIN_BARS:
+                latest_stage = IPO_STAGE  # EMA200 ยังไม่มี — ไม่ใช่ UNKNOWN จากข้อมูลเสีย
 
             bar_count = 0
             for i in range(201):
@@ -99,6 +104,7 @@ def scan_pine_script_stages():
                 "Distribution": 6,
                 "Bear": 7,
                 "UNKNOWN": 8,
+                IPO_STAGE: 9,
             }
 
             results.append(
