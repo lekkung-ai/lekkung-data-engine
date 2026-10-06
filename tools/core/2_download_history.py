@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import time
@@ -31,10 +32,15 @@ warnings.filterwarnings("ignore")
 
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
-from config import (CHUNK_SIZE, DAILY_FILE, FUND_WORKERS, HISTORY_DIR,
+from config import (CHUNK_SIZE, DAILY_FILE, FULL_HISTORY_MIN_ROWS, FUND_WORKERS, HISTORY_DIR,
                     PRICE_FALLBACK_MAX_STALE_BUSINESS_DAYS,
                     PRICE_FALLBACK_WARN_PCT, SET_INDEX_FETCH_PERIOD,
-                    SET_INDEX_YF_SYMBOL, SYMBOLS_FILE)
+                    SET_INDEX_YF_SYMBOL, SHORT_HISTORY_FILE, SHORT_HISTORY_MIN_ROWS,
+                    SYMBOLS_FILE)
+from tools.scanner.utils import load_symbol_sources  # noqa: E402
+
+# Source ใน active_symbols ที่ถือว่ายังจดทะเบียนอยู่ (เหมือน _LISTED_SOURCES ของ iter_stock_files)
+LISTED_SOURCES = frozenset({"tv", "grace", "listed"})
 
 RETRY_MAX_TRIES = 2
 RETRY_SLEEP_SEC = 2.0
@@ -258,6 +264,22 @@ def drop_holiday_rows_from_files(holidays, skip: set) -> Tuple[int, int]:
     return files, rows
 
 
+def write_short_history(short_history: Dict[str, int]) -> None:
+    """SHORT_HISTORY_FILE: หุ้นที่แถวดิบ < FULL_HISTORY_MIN_ROWS (IPO) รอบนี้ — อ่านโดย
+    tools/scanner/utils.load_short_history · เขียนทุกรอบ (ว่างก็เขียน) ไม่ให้รายชื่อเก่าค้าง"""
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "min_rows_kept": SHORT_HISTORY_MIN_ROWS,
+        "full_history_min_rows": FULL_HISTORY_MIN_ROWS,
+        "tickers": dict(sorted(short_history.items())),
+    }
+    SHORT_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SHORT_HISTORY_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if short_history:
+        print(f"\n🆕 [IPO] หุ้นประวัติสั้น {len(short_history)} ตัว (เก็บไฟล์ ไม่เข้า RS / scanner): "
+              + ", ".join(f"{t}({n})" for t, n in sorted(short_history.items())))
+
+
 def build_snapshot_row(ticker: str, df: pd.DataFrame, data_date: str, fallback: bool) -> Optional[Dict[str, Any]]:
     """Compute technical columns + build the daily_snapshot row dict for one
     ticker's OHLCV dataframe. Used for both freshly-downloaded data and
@@ -307,7 +329,7 @@ def retry_single_ticker_download(ticker: str) -> Optional[pd.DataFrame]:
             df = yf.download(yf_t, period="3y", interval="1d", auto_adjust=True, progress=False)
             if not df.empty:
                 df = df.dropna(subset=["Close"])
-                if len(df) >= 200:
+                if len(df) >= SHORT_HISTORY_MIN_ROWS:
                     return df
         except Exception:
             pass
@@ -407,7 +429,7 @@ def download_history_and_build_snapshot() -> None:
                 else:
                     df = data.dropna(subset=["Close"])
 
-                if len(df) >= 200:
+                if len(df) >= SHORT_HISTORY_MIN_ROWS:
                     fresh[ticker] = df
                 else:
                     chunk_failed_all.append(ticker)
@@ -431,6 +453,18 @@ def download_history_and_build_snapshot() -> None:
                 fresh[ticker] = retry_df
             else:
                 still_failed.append(ticker)
+
+    # 🆕 [IPO] ไฟล์ของหุ้นประวัติสั้นถูกเก็บ (stage "IPO" บนเว็บ) แต่ RS / scanner ต้องเห็น universe
+    # เท่าเดิม = หุ้นที่ผ่านเกณฑ์เดิม (FULL_HISTORY_MIN_ROWS แถวดิบ) · รายชื่อนี้ iter_stock_files ใช้กรอง
+    # ประวัติสั้นแต่ไม่อยู่ในรายชื่อที่ยังจดทะเบียน (Source = sector_map เช่นหุ้นเพิ่งถูกเพิกถอน ซึ่ง
+    # Yahoo เหลือแถวไม่กี่สิบวัน) → ทางเดิม: ไม่เขียนไฟล์ ส่งต่อ fallback / ตัดออก
+    sources, _ = load_symbol_sources()
+    for t in [t for t, df in fresh.items()
+              if len(df) < FULL_HISTORY_MIN_ROWS and (sources or {}).get(t) not in LISTED_SOURCES]:
+        del fresh[t]
+        still_failed.append(t)
+    short_history = {t: len(df) for t, df in fresh.items() if len(df) < FULL_HISTORY_MIN_ROWS}
+    write_short_history(short_history)
 
     # 🗓️ [Holiday] Yahoo ใส่แถววันหยุด (Volume 0, ราคาเดิม) มาทุกครั้งที่ดาวน์โหลด — ตัดออกก่อนเขียน
     # (นิยาม + เหตุผลที่ต้องเทียบ SET_INDEX ดู tools/core/trading_calendar.py)
