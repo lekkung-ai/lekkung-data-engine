@@ -40,6 +40,8 @@ MANUAL_DIR = DATA_DIR / "manual_input"
 
 # 📄 กำหนดชื่อไฟล์ผลลัพธ์ (Result Files)
 SYMBOLS_FILE = RESULTS_DIR / "active_symbols.csv"
+# หุ้นประวัติสั้น (IPO) ที่ 2_download_history.py เก็บไฟล์ไว้แต่ไม่เข้า RS / scanner (ดู SHORT_HISTORY_* ด้านล่าง)
+SHORT_HISTORY_FILE = RESULTS_DIR / "short_history.json"
 DAILY_FILE = RESULTS_DIR / "daily_prices.csv"
 RS_FILE = RESULTS_DIR / "rs_ranking.csv"
 SEPA_FILE = RESULTS_DIR / "sepa_result.csv"
@@ -65,6 +67,13 @@ LOG_FILE = LOGS_DIR / "run_log.txt"
 # ============================================================
 ADTV_MIN_MB = 10.0
 MIN_HISTORY_DAYS = 252
+# หุ้น IPO / ประวัติสั้น: เก็บไฟล์ราคาเมื่อมีอย่างน้อย SHORT_HISTORY_MIN_ROWS แถว (เดิมต้อง 200)
+# หุ้นที่ต่ำกว่า FULL_HISTORY_MIN_ROWS (= เกณฑ์เดิม) อยู่ใน short_history.json → iter_stock_files
+# ไม่ส่งให้ RS / scanner ตามเดิม มีแต่ stage scanner ที่ขอรวม (stage = "IPO")
+SHORT_HISTORY_MIN_ROWS = 20
+FULL_HISTORY_MIN_ROWS = 200
+NEW_LISTING_DAYS = 252  # combined.json Is_New_Listing = History_Days < ค่านี้
+IPO_STAGE = "IPO"      # stage ของหุ้นที่ข้อมูลไม่พอคำนวณ stage
 RS_MIN_THRESHOLD = 70
 SEPA_SLOPE_MIN = 0.0
 WEINSTEIN_SLOPE = 1.0
