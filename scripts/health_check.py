@@ -58,7 +58,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 from config import HISTORY_DIR, RESULTS_DIR  # noqa: E402
 from tools.core.trading_calendar import last_csv_date, reference_date  # noqa: E402
-from tools.scanner.utils import FUND_SUBSECTOR, NON_STOCK_FILES  # noqa: E402
+from tools.scanner.utils import NON_STOCK_FILES, is_fund_ticker  # noqa: E402
 
 BANGKOK_TZ = timezone(timedelta(hours=7))
 SCANS = "data/scans"
@@ -297,8 +297,7 @@ def check_h8(git: Git) -> List[Result]:
 
     map_raw = git.read(f"{SCANS}/sector_map.json")
     t2s = (load_json(map_raw)[0] or {}).get("ticker_to_sector", {}) if map_raw is not None else {}
-    funds = flagged | {str(t).upper() for t, info in t2s.items()
-                       if isinstance(info, dict) and info.get("subsector") == FUND_SUBSECTOR}
+    funds = flagged | {str(t).upper() for t in t2s if is_fund_ticker(t, t2s)}
     hits, missing = [], []
     for name in FUND_FREE_SCANS:
         raw = git.read(f"{SCANS}/{name}")

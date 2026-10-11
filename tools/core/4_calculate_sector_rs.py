@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # Connect config
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import RESULTS_DIR
+from tools.scanner.utils import is_fund_ticker
 
 BANGKOK_TZ = timezone(timedelta(hours=7))
 
@@ -71,7 +72,9 @@ def load_baseline_sector_counts(t2s: dict) -> tuple[dict[str, int], str]:
             logger.warning(f"⚠️ Could not read previous {path} for Drop Guard baseline: {e}")
 
     expected: dict[str, set] = {}
-    for info in t2s.values():
+    for ticker, info in t2s.items():
+        if is_fund_ticker(ticker, t2s):
+            continue
         expected.setdefault(info.get("market", "UNKNOWN"), set()).add(info.get("sector", "UNKNOWN"))
     return {m: len(s) for m, s in expected.items()}, "sector_map.json"
 
@@ -116,15 +119,23 @@ def main():
         sys.exit(1)
 
     # 3. Group and aggregate by (market, sector)
+    #    กองทุน / REIT (utils.is_fund_ticker) ไม่นับใน sector ใด (rsScore และ count) — ไม่ใช่หุ้นของ sector
+    #    Property · ปกติ RS_Rating ของกองทุนเป็น null อยู่แล้ว (3_calculate_rs) แต่ตัดตรงนี้ด้วยกฎเดียวกันอีกชั้น
     grouped_data = {}  # key: (market, sector) -> list of RS_Rating
     unmapped_count = 0
+    fund_count = 0
     non_finite = []
 
     for item in rs_data:
         ticker = item.get("Ticker")
         rs_rating = item.get("RS_Rating")
 
-        if not ticker or rs_rating is None:
+        if not ticker:
+            continue
+        if is_fund_ticker(ticker, t2s):
+            fund_count += 1
+            continue
+        if rs_rating is None:
             continue
 
         if not isinstance(rs_rating, (int, float)) or not math.isfinite(rs_rating):
@@ -152,6 +163,7 @@ def main():
 
     if unmapped_count > 0:
         logger.info(f"Unmapped tickers count: {unmapped_count}")
+    logger.info(f"Funds / REITs excluded from sector RS: {fund_count}")
 
     # 4. Construct output JSON structure
     sectors_output = {}

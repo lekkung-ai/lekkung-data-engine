@@ -21,6 +21,9 @@ Two daily-close based views per subsector (and per sector), SET market only:
 
 Universe = iter_stock_files(HISTORY_DIR) (stale files and SET_INDEX.csv already excluded)
            restricted to SET-market tickers in sector_map.json.
+Funds / REITs (utils.is_fund_ticker = subsector "Property Fund & REITs") keep their own subsector row
+but are NOT counted in any sector-level row (sector Property = stocks only). They stay in the market
+total (share denominator) and in the universe_capweighted fallback benchmark, so every other row is unchanged.
 Market cap = Market_Cap column of daily_prices.csv (TradingView market_cap_basic, written by 2_download_history.py).
 Output:   data/results/output/sector_flow.json (copied to stockdesk/data/scans/ by the pipeline).
 """
@@ -47,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import DAILY_FILE, HISTORY_DIR, RESULTS_DIR  # noqa: E402
-from tools.scanner.utils import iter_stock_files, load_full_df  # noqa: E402
+from tools.scanner.utils import is_fund_ticker, iter_stock_files, load_full_df  # noqa: E402
 
 BANGKOK_TZ = timezone(timedelta(hours=7))
 
@@ -283,7 +286,8 @@ def build(history_dir: Path, daily_file: Path, sector_map_path: Path,
     tickers_by_sec: Dict[str, List[str]] = {}
     for t in hist:
         sec, sub = set_tickers[t]
-        tickers_by_sec.setdefault(sec, []).append(t)
+        if not is_fund_ticker(t, t2s):
+            tickers_by_sec.setdefault(sec, []).append(t)
         if sub:
             tickers_by_sub.setdefault((sec, sub), []).append(t)
 
@@ -305,7 +309,8 @@ def build(history_dir: Path, daily_file: Path, sector_map_path: Path,
             "the previous 20 trading days; flow_5d = avg share of last 5 days / avg share of the 20 days before. "
             "value_* / base_value_* = traded value in million baht behind flow_* (today / 5-day daily avg vs the 20-day base). chg_* and ret_* = market-cap-weighted group return (constant-share basket, shares ESTIMATED as "
             "market_cap_now / Close_now - historical share counts unavailable); excess_* = group ret - benchmark ret (benchmark = SET index, or the whole-universe market-cap-weighted return when SET_INDEX.csv does not end on as_of) over "
-            "5 / 21 / 63 trading days. status: level = excess_3m, direction = excess_1m. avg_value_20d in million baht."
+            "5 / 21 / 63 trading days. status: level = excess_3m, direction = excess_1m. avg_value_20d in million baht. "
+            "Sector rows exclude funds / REITs (subsector 'Property Fund & REITs'), which keep their own subsector row."
         ),
         "benchmark": benchmark,
         "n_stocks": len(hist),

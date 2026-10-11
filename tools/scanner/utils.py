@@ -22,6 +22,15 @@ SECTOR_MAP_CANDIDATES = [
 ]
 
 
+def is_fund_ticker(ticker: str, t2s: Dict[str, dict]) -> bool:
+    """กฎเดียวของ "กองทุน / REIT" ทั้ง data-engine: ticker ที่ sector_map.json (ticker_to_sector = t2s)
+    จัดเป็น subsector FUND_SUBSECTOR — ใช้ที่ load_fund_tickers, 4_calculate_sector_rs, calculate_sector_flow,
+    health_check (ห้ามเขียนกฎนี้ซ้ำที่อื่น · ห้ามแก้ sector_map เพื่อย้ายกองทุนออกจาก sector Property)"""
+    t = str(ticker).strip().upper()
+    info = t2s.get(t, t2s.get(ticker))
+    return isinstance(info, dict) and info.get("subsector") == FUND_SUBSECTOR
+
+
 def load_fund_tickers() -> Set[str]:
     """set ของ ticker (ตัวใหญ่) ที่ sector_map.json จัดเป็น subsector FUND_SUBSECTOR
 
@@ -36,11 +45,7 @@ def load_fund_tickers() -> Set[str]:
     try:
         with open(path, encoding="utf-8") as f:
             t2s = json.load(f).get("ticker_to_sector", {})
-        return {
-            str(t).strip().upper()
-            for t, info in t2s.items()
-            if isinstance(info, dict) and info.get("subsector") == FUND_SUBSECTOR
-        }
+        return {str(t).strip().upper() for t in t2s if is_fund_ticker(t, t2s)}
     except Exception as e:  # noqa: BLE001
         print(f"[load_fund_tickers] ERROR: cannot read {path} ({e}) - no fund excluded")
         return set()
