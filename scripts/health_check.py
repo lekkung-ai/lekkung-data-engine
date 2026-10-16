@@ -26,10 +26,13 @@ working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ข�
       กองทุน = Is_Fund ใน combined.json ∪ subsector FUND_SUBSECTOR ใน sector_map.json
   H9  public/data/news_flags.json (ป้ายข่าวบนหน้า scan · เขียนโดย stockdesk news-fetch.yml):
       มีไฟล์ · generated_at ไม่เก่ากว่าวันอ้างอิงเกิน NEWS_FLAGS_MAX_BUSINESS_DAYS วันทำการ
+  H10 data/scans/macro_commodities.json (หน้า /macro): ราคาล่าสุด (latest.date) ของแต่ละตัวแปร
+      ไม่เก่ากว่าวันอ้างอิงเกิน MACRO_MAX_BUSINESS_DAYS วันทำการ · ตัวที่เก่ากว่า → FAIL พร้อมรายชื่อ
+      (fetch_macro ใช้ค่าล่าสุดที่ดีแทนเมื่อดึงไม่ได้ → ไฟล์สดแต่ราคาค้างได้ ข้อนี้จับรายตัว)
 
 วันที่ตลาดไม่เปิด (--non-trading-day = run_all.py ข้ามทั้งรอบ "NON_TRADING_DAY"): ไม่มีอะไรถูก
 copy / push ในรอบนั้น → ข้อที่เทียบกับ "run นี้" (H3 generated_at ของ run นี้, H5/H6 JSON ที่ copy
-รอบนี้) ถูกข้าม · ข้ออื่นตรวจตามปกติกับไฟล์บน origin (ซึ่งยังเป็นของวันทำการล่าสุด = วันอ้างอิง)
+รอบนี้) และ H10 ถูกข้าม · ข้ออื่นตรวจตามปกติกับไฟล์บน origin (ซึ่งยังเป็นของวันทำการล่าสุด = วันอ้างอิง)
 
 "JSON ที่ copy ไป stockdesk รอบนี้" = ชื่อไฟล์ *.json ใน --output-dir (data/results/output
 ของ runner ซึ่งสดทุก run เพราะ gitignore) — ตรงกับ step "Copy JSON to stockdesk"
@@ -82,6 +85,14 @@ MANIFEST = "generated_at.json"
 # H9 — ป้ายข่าวบนหน้า scan (stockdesk scripts/build_news_flags.py ใน news-fetch.yml)
 NEWS_FLAGS = "public/data/news_flags.json"
 NEWS_FLAGS_MAX_BUSINESS_DAYS = 1
+# H10 — ราคาของตัวแปรบนหน้า /macro (tools/macro/fetch_macro.py)
+MACRO_JSON = f"{SCANS}/macro_commodities.json"
+MACRO_MAX_BUSINESS_DAYS = 2
+# H10 — ตัวแปรที่ตามธรรมชาติอัปเดตไม่ทุกวัน → ไม่ตรวจ (symbol → เหตุผล)
+# ว่างอยู่: ทั้ง 25 ตัวมีราคาทุกวันทำการ (series 180 วันถึง 2026-10-05 ขาดติดกันไม่เกิน 1 วันทำการ —
+# วันหยุดของตลาดนั้น ๆ) · SICOM_RSS3 / SICOM_TSR20 / SHFE_RU ดึงจาก TradingView scanner ซึ่งใส่วันที่
+# = วันที่รัน เสมอ → ข้อนี้จับการค้างของ 3 ตัวนี้ไม่ได้
+MACRO_ALLOWLIST: Dict[str, str] = {}
 # H8 — JSON ของ scanner หุ้น (เลือกหุ้นเข้าซื้อ) ที่ต้องไม่มีกองทุน/REIT · scanner ด้าน stage
 # (market_stage / stage_all / weinstein) ยังมีกองทุนตามปกติ จึงไม่อยู่ในนี้
 FUND_FREE_SCANS = ("sepa.json", "oliver_kell.json", "breakout.json", "ppbp.json", "lekkung.json", "oneil.json")
@@ -331,6 +342,32 @@ def check_h9(git: Git, ref: date) -> List[Result]:
              f"tickers={len(d.get('flags') or {})}")]
 
 
+def check_h10(git: Git, ref: date) -> List[Result]:
+    title = f"macro prices not older than {MACRO_MAX_BUSINESS_DAYS} business days vs ref"
+    raw = git.read(MACRO_JSON)
+    if raw is None:
+        return [("H10", title, False, f"{MACRO_JSON} not found")]
+    try:
+        items = load_json(raw)[0]["commodities"]
+    except (ValueError, UnicodeDecodeError, KeyError, TypeError) as e:
+        return [("H10", title, False, f"no readable commodities ({e.__class__.__name__})")]
+    stale, checked = [], 0
+    for sym, item in items.items():
+        if sym in MACRO_ALLOWLIST:
+            continue
+        checked += 1
+        d = (item.get("latest") or {}).get("date")
+        try:
+            age = busdays(date.fromisoformat(str(d)[:10]), ref)
+        except ValueError:
+            stale.append(f"{sym} (no date)")
+            continue
+        if age > MACRO_MAX_BUSINESS_DAYS:
+            stale.append(f"{sym} {d} ({age} bdays)")
+    return [("H10", title, not stale,
+             f"stale={stale or 'none'} · checked={checked}/{len(items)} · allowlist={sorted(MACRO_ALLOWLIST) or 'none'}")]
+
+
 # ------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -344,7 +381,7 @@ def main() -> int:
                     help="ISO time this run started - daily-scan.yml passes $RUN_START "
                          "(missing/empty: fall back to mtime of run_all.py + WARNING)")
     ap.add_argument("--non-trading-day", action="store_true",
-                    help="run_all.py skipped this run (NON_TRADING_DAY): skip H3/H5/H6, which check this run's output")
+                    help="run_all.py skipped this run (NON_TRADING_DAY): skip H3/H5/H6, which check this run's output, and H10")
     args = ap.parse_args()
 
     if args.run_start:
@@ -366,7 +403,7 @@ def main() -> int:
     print(f"run start: {run_start.isoformat(timespec='seconds')} (from {run_start_src})")
     print(f"copied JSON this run ({len(names)}): {', '.join(names) or '-'}")
     if args.non_trading_day:
-        print("NON_TRADING_DAY run: nothing was copied or pushed - H3/H5/H6 (this run's output) skipped")
+        print("NON_TRADING_DAY run: nothing was copied or pushed - H3/H5/H6 (this run's output) and H10 skipped")
 
     results: List[Result] = []
     if ref is None:
@@ -383,6 +420,8 @@ def main() -> int:
     results += check_h8(git)
     if ref is not None:
         results += check_h9(git, ref)
+    if ref is not None and not args.non_trading_day:
+        results += check_h10(git, ref)
 
     print()
     w = max(len(r[1]) for r in results)
