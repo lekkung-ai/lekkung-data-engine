@@ -232,6 +232,28 @@ jobs:
           token: ${{ secrets.DASHBOARD_PAT }}
           path: stockdesk_repo
 
+      - name: Macro on a weekday SET holiday (global markets open)
+        # NON_TRADING_DAY on Mon-Fri = SET holiday (e.g. 2026-10-16) while commodity / FX markets still trade
+        # → refresh /macro only: fetch_macro.py, then push data/scans/macro_commodities.json alone
+        # (no scans, archive, diff or history snapshots). Sat/Sun: global markets closed too → skip.
+        # HOLIDAY_MACRO_DOW (unset in CI) only lets a local test pretend to be another weekday.
+        id: holiday_macro
+        if: steps.run_pipeline.outputs.non_trading == 'true'
+        env:
+          STOCKDESK_MACRO_JSON: stockdesk_macro_check/data/scans/macro_commodities.json
+        run: |
+          BKK_DOW=${HOLIDAY_MACRO_DOW:-$(TZ='Asia/Bangkok' date +%u)}
+          if [ "$BKK_DOW" -ge 6 ]; then
+            echo "Weekend (day $BKK_DOW) - global markets closed too, macro not refreshed."
+            exit 0
+          fi
+          python tools/macro/fetch_macro.py
+          cp data/results/output/macro_commodities.json stockdesk_repo/data/scans/macro_commodities.json
+          cd stockdesk_repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python scripts/safe_push.py --repo . --message "Macro update (SET holiday)" --add data/scans/macro_commodities.json
+
       - name: Check universe drift (Mondays only)
         if: steps.run_pipeline.outputs.non_trading != 'true'
         # active_symbols.csv was already refreshed fresh by 1_get_symbols.py
@@ -510,7 +532,7 @@ jobs:
       - name: Data health check
         # หลัง push data แล้วเสมอ (if: always() + อยู่ท้ายสุด) — อ่านไฟล์ที่ landed จริงบน
         # stockdesk (origin/main ของ stockdesk_repo) + SET_INDEX.csv / ไฟล์หุ้นใน data/history
-        # ตรวจ H1–H6 (ดู docstring ใน scripts/health_check.py) · print ตารางผลทุกข้อ
+        # ตรวจ H1–H10 (ดู docstring ใน scripts/health_check.py) · print ตารางผลทุกข้อ
         # · exit 1 เมื่อมีข้อใดไม่ผ่าน → job แดง
         if: always()
         run: python scripts/health_check.py --run-start "$RUN_START" ${{ steps.run_pipeline.outputs.non_trading == 'true' && '--non-trading-day' || '' }}
