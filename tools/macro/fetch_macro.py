@@ -11,6 +11,7 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
+import asyncio
 import json
 from datetime import datetime, timezone, timedelta
 import urllib.request
@@ -21,6 +22,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import RESULTS_DIR  # type: ignore
 
 from macro_mapping import COMMODITIES, ZONE_LABELS  # type: ignore
+from tools.core.set_index_source import _tv_fetch_async  # type: ignore  # TradingView WebSocket (same as SET_INDEX)
 
 OUTPUT_DIR = RESULTS_DIR / "output"
 BKK_TZ = timezone(timedelta(hours=7))
@@ -33,6 +35,38 @@ PCT_1M_TRADING_DAYS = 21
 def now_iso() -> str:
     return datetime.now(BKK_TZ).strftime("%Y-%m-%dT%H:%M:%S+07:00")
 
+
+# ─── TradingView WebSocket as the PRIMARY source ─────────────────────────────
+# Since 2026-10-06 Yahoo fails from the CI runner for these five energy futures (the other =F symbols
+# still work), and the tradingview_ta fallback never ran in CI (package not installed) → /macro showed the
+# 2026-10-05 prices as "ราคาค้าง". These now come from the same TradingView WebSocket daily feed that
+# set_index_source.py uses for SET_INDEX (no new dependency); Yahoo stays as the fallback, then last-good.
+# TradingView continuous front month (1!): Brent = ICE Brent, WTI / Henry Hub / ULSD (heating oil) /
+# RBOB = NYMEX. Same instruments as Yahoo's =F, but 1! rolls to the next contract on a different day, so
+# around each roll the two differ (seen 2026-10-15: up to ~13%, HO/RB about half of every month); outside
+# the roll windows the closes are identical. Approved 2026-10-16: use 1! as is, no cross-source % rule.
+# One source per series: the whole history, latest, % 1D and % 1M all come from whichever source answered.
+TV_PRIMARY = {
+    "BZ=F": "ICEEUR:BRN1!",
+    "CL=F": "NYMEX:CL1!",
+    "NG=F": "NYMEX:NG1!",
+    "HO=F": "NYMEX:HO1!",
+    "RB=F": "NYMEX:RB1!",
+}
+TV_WS_BARS = 300                 # > SERIES_DAYS + PCT_1M_TRADING_DAYS
+TV_WS_TIMEOUT_SEC = 30
+TV_WS_ATTEMPTS = 2
+# A TradingView daily bar is stamped at its session open: NYMEX 22:00Z the evening before, ICE 00:00Z
+# (22:00Z after a weekend). +6h moves every stamp onto the trading date Yahoo uses for the same close.
+TV_SESSION_SHIFT = timedelta(hours=6)
+# Guard: a day-on-day move beyond this is logged as a WARNING (the price is still used)
+TV_JUMP_WARN_PCT = 15.0
+
+# "source" / "source_symbol" written into macro_commodities.json = what this run actually used
+SRC_TV_WS = "TradingView continuous"
+SRC_TV_SCANNER = "TradingView scanner"
+SRC_TV_TA = "TradingView TA"
+SRC_YAHOO = "Yahoo Finance"
 
 DIRECT_TV_MAPPING = {
     "SICOM_RSS3": "SGX:RT1!",
@@ -131,12 +165,36 @@ def fetch_tradingview(symbol: str) -> dict | None:
     return None
 
 
-def fetch_symbol(symbol: str, retries: int = 2) -> dict | None:
-    # Direct TV mapping symbols bypass yfinance
-    if symbol in DIRECT_TV_MAPPING:
-        return fetch_direct_tradingview(symbol)
+def build_result(points: list[tuple[str, float]]) -> dict | None:
+    """[(YYYY-MM-DD, close), …] oldest first → latest / pct_1d / pct_1m / series (last SERIES_DAYS)."""
+    if not points:
+        return None
+    full = [c for _, c in points]
+    tail = points[-SERIES_DAYS:]
+    series = [{"date": d, "close": round(float(c), 4)} for d, c in tail]
+    latest_date, latest_close = tail[-1][0], float(tail[-1][1])
 
-    # Primary: yfinance with retries
+    pct_1d = None
+    if len(full) >= 2:
+        prev = float(full[-2])
+        if prev:
+            pct_1d = round((latest_close - prev) / prev * 100, 2)
+
+    pct_1m = None
+    if len(tail) > PCT_1M_TRADING_DAYS:
+        ref = float(tail[-1 - PCT_1M_TRADING_DAYS][1])
+        if ref:
+            pct_1m = round((latest_close - ref) / ref * 100, 2)
+
+    return {
+        "latest": {"date": latest_date, "close": round(latest_close, 4)},
+        "pct_1d": pct_1d,
+        "pct_1m": pct_1m,
+        "series": series,
+    }
+
+
+def fetch_yahoo(symbol: str, retries: int = 2) -> dict | None:
     for attempt in range(retries):
         try:
             ticker = yf.Ticker(symbol)
@@ -144,47 +202,75 @@ def fetch_symbol(symbol: str, retries: int = 2) -> dict | None:
             if hist is not None and not hist.empty:
                 hist = hist.dropna(subset=["Close"])
                 if not hist.empty:
-                    tail = hist.tail(SERIES_DAYS)
-                    closes = tail["Close"]
-
-                    series = [
-                        {"date": d.strftime("%Y-%m-%d"), "close": round(float(c), 4)}
-                        for d, c in closes.items()
-                    ]
-
-                    latest_close = float(closes.iloc[-1])
-                    latest_date = tail.index[-1].strftime("%Y-%m-%d")
-
-                    pct_1d = None
-                    if len(closes) >= 2:
-                        prev = float(closes.iloc[-2])
-                        if prev:
-                            pct_1d = round((latest_close - prev) / prev * 100, 2)
-
-                    pct_1m = None
-                    if len(closes) > PCT_1M_TRADING_DAYS:
-                        ref = float(closes.iloc[-1 - PCT_1M_TRADING_DAYS])
-                        if ref:
-                            pct_1m = round((latest_close - ref) / ref * 100, 2)
-
-                    return {
-                        "latest": {"date": latest_date, "close": round(latest_close, 4)},
-                        "pct_1d": pct_1d,
-                        "pct_1m": pct_1m,
-                        "series": series,
-                    }
-        except Exception:
-            pass
+                    return build_result([(d.strftime("%Y-%m-%d"), float(c)) for d, c in hist["Close"].items()])
+            print(f"     ⚠️ Yahoo {symbol}: empty history (attempt {attempt + 1}/{retries})")
+        except Exception as e:
+            print(f"     ⚠️ Yahoo {symbol}: {type(e).__name__}: {e} (attempt {attempt + 1}/{retries})")
         if attempt < retries - 1:
             time.sleep(1.0)
-
-    # Secondary: TradingView fallback
-    tv_data = fetch_tradingview(symbol)
-    if tv_data is not None:
-        print(f"     📊 fetched via TradingView fallback for {symbol}")
-        return tv_data
-
     return None
+
+
+def tv_session_date(ts: float) -> str:
+    return (datetime.fromtimestamp(ts, timezone.utc) + TV_SESSION_SHIFT).strftime("%Y-%m-%d")
+
+
+def fetch_tv_websocket(symbol: str) -> dict | None:
+    """TV_PRIMARY symbol → daily history from the TradingView WebSocket (set_index_source._tv_fetch_async)."""
+    tv_sym = TV_PRIMARY[symbol]
+    for attempt in range(1, TV_WS_ATTEMPTS + 1):
+        try:
+            rows = asyncio.run(asyncio.wait_for(_tv_fetch_async(tv_sym, TV_WS_BARS), timeout=TV_WS_TIMEOUT_SEC))
+            bars = [r["v"] for r in rows if len(r.get("v", [])) >= 5]
+            if not bars:
+                print(f"     ⚠️ TradingView {tv_sym}: no bars (attempt {attempt}/{TV_WS_ATTEMPTS})")
+            elif bars[-1][4] is None or float(bars[-1][4]) <= 0:
+                # newest bar without a price → use the fallback source, never yesterday's close as "latest"
+                print(f"     ⚠️ TradingView {tv_sym}: newest bar has no price ({bars[-1][4]!r}) → fallback")
+                return None
+            else:
+                by_date: dict[str, float] = {}
+                for v in bars:
+                    if v[4] is not None and float(v[4]) > 0:
+                        by_date[tv_session_date(v[0])] = float(v[4])  # same session twice → keep the later bar
+                data = build_result(sorted(by_date.items()))
+                if data and data["pct_1d"] is not None and abs(data["pct_1d"]) > TV_JUMP_WARN_PCT:
+                    print(f"     ⚠️ WARNING TradingView {tv_sym}: day-on-day change {data['pct_1d']:+.2f}% "
+                          f"(> ±{TV_JUMP_WARN_PCT:.0f}%) — still used, check the contract roll")
+                return data
+        except Exception as e:
+            print(f"     ⚠️ TradingView {tv_sym}: {type(e).__name__}: {e} (attempt {attempt}/{TV_WS_ATTEMPTS})")
+        if attempt < TV_WS_ATTEMPTS:
+            time.sleep(3)
+    return None
+
+
+def fetch_symbol(symbol: str) -> tuple[dict | None, str | None, str | None]:
+    """(data, source, source_symbol) — logged every run and written into the JSON."""
+    # Direct TV mapping symbols bypass yfinance
+    if symbol in DIRECT_TV_MAPPING:
+        return fetch_direct_tradingview(symbol), SRC_TV_SCANNER, DIRECT_TV_MAPPING[symbol]
+
+    if symbol in TV_PRIMARY:
+        data = fetch_tv_websocket(symbol)
+        if data is not None:
+            return data, SRC_TV_WS, TV_PRIMARY[symbol]
+        print(f"     ↪️ TradingView {TV_PRIMARY[symbol]} failed → Yahoo {symbol} (whole history from Yahoo)")
+
+    # Yahoo (primary for everything else, fallback for TV_PRIMARY — always the full Yahoo history)
+    data = fetch_yahoo(symbol)
+    if data is not None:
+        return data, SRC_YAHOO, symbol
+
+    # TradingView TA fallback — tradingview_ta is not in requirements (absent in CI), but the local
+    # update_stockdesk.bat run (run_all.py scan) has it. Not used for TV_PRIMARY symbols.
+    if symbol not in TV_PRIMARY:
+        tv_data = fetch_tradingview(symbol)
+        if tv_data is not None:
+            tv_sym, _, exchange = TV_MAPPING[symbol]
+            return tv_data, SRC_TV_TA, f"{exchange}:{tv_sym}"
+
+    return None, None, None
 
 
 def resolve_stockdesk_macro_path() -> Path | None:
@@ -244,7 +330,7 @@ def main():
 
     for i, (symbol, meta) in enumerate(symbols):
         print(f"  ⏳ ({i + 1}/{total_symbols}) {symbol} ({meta['name_en']})...")
-        data = fetch_symbol(symbol)
+        data, source, source_symbol = fetch_symbol(symbol)
 
         # Validate fetched data. A positive close IS valid data — it's exactly
         # what the /macro page needs (its "ไม่มีข้อมูล" test is close > 0). An
@@ -280,8 +366,10 @@ def main():
             data["last_success_date"] = data.get("latest", {}).get("date") or now_iso()[:10]
             data["never_fetched"] = False
             data["series_empty"] = series_empty
+            data["source"] = source
+            data["source_symbol"] = source_symbol
             print(
-                f"     ✓ [NEW] latest={data['latest'].get('close')} ({data['latest'].get('date')}) "
+                f"     ✓ [NEW] source={source} ({source_symbol}) latest={data['latest'].get('close')} ({data['latest'].get('date')}) "
                 f"1D={data.get('pct_1d')} 1M={data.get('pct_1m')} series={len(data.get('series', []))} วัน"
             )
         else:
@@ -298,9 +386,12 @@ def main():
                         "last_success_date": prev_item.get("last_success_date") or prev_item.get("latest", {}).get("date"),
                         "never_fetched": prev_item.get("never_fetched", False),
                         "is_stale_fallback": True,
+                        # the run that produced this price (absent in files written before 2026-10-16)
+                        "source": prev_item.get("source"),
+                        "source_symbol": prev_item.get("source_symbol"),
                     }
                     print(
-                        f"     🔄 [FALLBACK] kept existing valid snapshot for {symbol} "
+                        f"     🔄 [FALLBACK] source=last-good ({data['source']} {data['source_symbol']}) kept existing valid snapshot for {symbol} "
                         f"(close={data['latest'].get('close')}, last_success={data['last_success_date']})"
                     )
                 else:
@@ -315,8 +406,10 @@ def main():
                     "series": [],
                     "last_success_date": None,
                     "never_fetched": True,
+                    "source": None,
+                    "source_symbol": None,
                 }
-                print(f"     ⚠️ [PLACEHOLDER] no valid fallback for {symbol} -> created never_fetched entry")
+                print(f"     ⚠️ [PLACEHOLDER] source=none no valid fallback for {symbol} -> created never_fetched entry")
 
         out_commodities[symbol] = {**meta, **data}
 
