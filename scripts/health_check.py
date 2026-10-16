@@ -31,8 +31,10 @@ working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ข�
       (fetch_macro ใช้ค่าล่าสุดที่ดีแทนเมื่อดึงไม่ได้ → ไฟล์สดแต่ราคาค้างได้ ข้อนี้จับรายตัว)
 
 วันที่ตลาดไม่เปิด (--non-trading-day = run_all.py ข้ามทั้งรอบ "NON_TRADING_DAY"): ไม่มีอะไรถูก
-copy / push ในรอบนั้น → ข้อที่เทียบกับ "run นี้" (H3 generated_at ของ run นี้, H5/H6 JSON ที่ copy
-รอบนี้) และ H10 ถูกข้าม · ข้ออื่นตรวจตามปกติกับไฟล์บน origin (ซึ่งยังเป็นของวันทำการล่าสุด = วันอ้างอิง)
+copy / push ในรอบนั้น → ข้อที่เทียบกับ "run นี้" (H3 generated_at ของ run นี้, H4 combined.json เทียบ
+commit ก่อนหน้า, H5/H6 JSON ที่ copy รอบนี้) และ H10 ถูกข้าม · H4: stockdesk_repo เป็น shallow checkout
+(depth 1) → วันที่ไม่มี commit ของ run นี้ git log เห็น combined.json แค่ 1 commit จึงหา "ตัวก่อนหน้า" ไม่ได้ · ข้ออื่นตรวจตามปกติกับไฟล์บน origin (ซึ่งยังเป็นของวันทำการล่าสุด = วันอ้างอิง)
+· ยกเว้น 1 ไฟล์: วันหยุด SET ที่เป็นวันธรรมดา step "Macro on a weekday SET holiday" push macro_commodities.json
 
 "JSON ที่ copy ไป stockdesk รอบนี้" = ชื่อไฟล์ *.json ใน --output-dir (data/results/output
 ของ runner ซึ่งสดทุก run เพราะ gitignore) — ตรงกับ step "Copy JSON to stockdesk"
@@ -381,7 +383,7 @@ def main() -> int:
                     help="ISO time this run started - daily-scan.yml passes $RUN_START "
                          "(missing/empty: fall back to mtime of run_all.py + WARNING)")
     ap.add_argument("--non-trading-day", action="store_true",
-                    help="run_all.py skipped this run (NON_TRADING_DAY): skip H3/H5/H6, which check this run's output, and H10")
+                    help="run_all.py skipped this run (NON_TRADING_DAY): skip H3/H4/H5/H6, which check this run's output, and H10")
     args = ap.parse_args()
 
     if args.run_start:
@@ -403,7 +405,7 @@ def main() -> int:
     print(f"run start: {run_start.isoformat(timespec='seconds')} (from {run_start_src})")
     print(f"copied JSON this run ({len(names)}): {', '.join(names) or '-'}")
     if args.non_trading_day:
-        print("NON_TRADING_DAY run: nothing was copied or pushed - H3/H5/H6 (this run's output) and H10 skipped")
+        print("NON_TRADING_DAY run: nothing was copied or pushed - H3/H4/H5/H6 (this run's output) and H10 skipped")
 
     results: List[Result] = []
     if ref is None:
@@ -413,7 +415,8 @@ def main() -> int:
         results += check_h2(git, ref)
         if not args.non_trading_day:
             results += check_h3(git, args.history_dir, ref, run_start)
-    results += check_h4(git)
+    if not args.non_trading_day:
+        results += check_h4(git)
     if ref is not None and not args.non_trading_day:
         results += check_h5_h6(git, names, ref)
     results += check_h7(git)
