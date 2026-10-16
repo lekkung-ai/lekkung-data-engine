@@ -173,6 +173,7 @@ def main():
         SCANNER_DIR / "scan_canslim.py",         # 👈 เพิ่ม CANSLIM Scan
         SCANNER_DIR / "scan_stage_all.py",       # 👈 กู้คืนให้ Vercel
         SCANNER_DIR / "scan_ppbp.py",            # 👈 กู้คืนให้ Vercel
+        SCANNER_DIR / "scan_lekkung_daytrade.py",  # 👈 Lekkung Daytrade Scan (TradingView) เขียน lekkung_daytrade.json ตรง ไม่ผ่าน convert_to_json
         DATA_DIR / "results" / "convert_to_json.py", # 👈 สร้างไฟล์ JSON สำหรับ Dashboard
         CORE_DIR / "calculate_sector_flow.py",       # 👈 Sector Flow (volume share + relative strength) for /sector-flow page
         CORE_DIR / "4_calculate_sector_rs.py",

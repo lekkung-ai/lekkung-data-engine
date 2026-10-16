@@ -97,7 +97,8 @@ MACRO_MAX_BUSINESS_DAYS = 2
 MACRO_ALLOWLIST: Dict[str, str] = {}
 # H8 — JSON ของ scanner หุ้น (เลือกหุ้นเข้าซื้อ) ที่ต้องไม่มีกองทุน/REIT · scanner ด้าน stage
 # (market_stage / stage_all / weinstein) ยังมีกองทุนตามปกติ จึงไม่อยู่ในนี้
-FUND_FREE_SCANS = ("sepa.json", "oliver_kell.json", "breakout.json", "ppbp.json", "lekkung.json", "oneil.json")
+FUND_FREE_SCANS = ("sepa.json", "oliver_kell.json", "breakout.json", "ppbp.json", "lekkung.json", "oneil.json",
+                   "lekkung_daytrade.json")
 
 
 # ------------------------------------------------------------------ helpers
