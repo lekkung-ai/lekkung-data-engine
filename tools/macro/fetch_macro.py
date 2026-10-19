@@ -105,9 +105,13 @@ def fetch_direct_tradingview(symbol: str) -> dict | None:
         return None
     tv_ticker = DIRECT_TV_MAPPING[symbol]
     url = "https://scanner.tradingview.com/futures/scan"
+    # "time" = open time of the latest daily bar (unix s) — matches the WebSocket daily bars (checked
+    # 2026-10-19). Stored as that instant's date in Bangkok time, like H10's reference date. SGX TF1 / SHFE
+    # night sessions open the evening before their trading day, so this date is never later than the real
+    # session (at most one session earlier) → a stale price can never look fresh to H10.
     payload = {
         "symbols": {"tickers": [tv_ticker]},
-        "columns": ["close", "change", "change_abs"]
+        "columns": ["close", "change", "change_abs", "time"]
     }
     try:
         req = urllib.request.Request(
@@ -118,12 +122,18 @@ def fetch_direct_tradingview(symbol: str) -> dict | None:
         with urllib.request.urlopen(req, timeout=6) as resp:
             res = json.loads(resp.read().decode("utf-8"))
             data_rows = res.get("data", [])
-            if data_rows and len(data_rows[0].get("d", [])) >= 2:
+            if data_rows and len(data_rows[0].get("d", [])) >= 4:
                 cols = data_rows[0]["d"]
+                bar_ts = cols[3]
+                if not isinstance(bar_ts, (int, float)) or bar_ts <= 0:
+                    # no bar time → never stamp the run date instead; the merge-guard keeps last-good
+                    print(f"     ⚠️ Direct TradingView Scanner {symbol} ({tv_ticker}): no bar time ({bar_ts!r}) → not used")
+                    return None
                 close = round(float(cols[0]), 4)
                 pct_1d = round(float(cols[1]), 2)
+                bar_date = datetime.fromtimestamp(bar_ts, BKK_TZ).strftime("%Y-%m-%d")
                 return {
-                    "latest": {"date": now_iso()[:10], "close": close},
+                    "latest": {"date": bar_date, "close": close},
                     "pct_1d": pct_1d,
                     "pct_1m": None,
                     "series": [],
@@ -442,7 +452,7 @@ def main():
         "commodities": out_commodities,
     }
 
-    json_str = json.dumps(out, ensure_ascii=False, indent=2)
+    json_str = json.dumps(out, ensure_ascii=False, indent=2, allow_nan=False)
     out_path.write_text(json_str, encoding="utf-8")
     print(
         f"\n🎉 [Macro] เสร็จสิ้น: {len(out_commodities)}/{total_symbols} รายการ (ดึงสดสำเร็จ {successfully_fetched_count}) -> {out_path}"
