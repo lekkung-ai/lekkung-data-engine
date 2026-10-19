@@ -92,8 +92,9 @@ MACRO_JSON = f"{SCANS}/macro_commodities.json"
 MACRO_MAX_BUSINESS_DAYS = 2
 # H10 — ตัวแปรที่ตามธรรมชาติอัปเดตไม่ทุกวัน → ไม่ตรวจ (symbol → เหตุผล)
 # ว่างอยู่: ทั้ง 25 ตัวมีราคาทุกวันทำการ (series 180 วันถึง 2026-10-05 ขาดติดกันไม่เกิน 1 วันทำการ —
-# วันหยุดของตลาดนั้น ๆ) · SICOM_RSS3 / SICOM_TSR20 / SHFE_RU ดึงจาก TradingView scanner ซึ่งใส่วันที่
-# = วันที่รัน เสมอ → ข้อนี้จับการค้างของ 3 ตัวนี้ไม่ได้
+# วันหยุดของตลาดนั้น ๆ) · SICOM_RSS3 / SICOM_TSR20 / SHFE_RU (TradingView scanner) ใช้วันที่ของแท่งราคา
+# (คอลัมน์ "time") ตั้งแต่ 2026-10-19 → ตรวจได้เหมือนตัวอื่น · นับวันทำการ จันทร์–ศุกร์ ไม่รู้วันหยุดของ
+# ตลาดต้นทาง → วันหยุดยาวของจีน (ตรุษจีน / Golden Week ~5 วันทำการ) SHFE_RU จะ FAIL ช่วงนั้นแบบมีเสียง
 MACRO_ALLOWLIST: Dict[str, str] = {}
 # H8 — JSON ของ scanner หุ้น (เลือกหุ้นเข้าซื้อ) ที่ต้องไม่มีกองทุน/REIT · scanner ด้าน stage
 # (market_stage / stage_all / weinstein) ยังมีกองทุนตามปกติ จึงไม่อยู่ในนี้
