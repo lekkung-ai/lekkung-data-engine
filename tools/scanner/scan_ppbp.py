@@ -6,8 +6,12 @@ scan_ppbp.py  —  Pocket Pivot Buy Point scanner
   2. Volume วันนี้ > Volume ของ ทุก วันที่ลง (Close <= Open) ใน 10 วันก่อนหน้า
   3. Volume วันนี้ > Volume SMA50 (50 วันก่อนหน้า)
 
+หุ้นประวัติสั้น (IPO, short_history.json) เข้าได้ — สูตรใช้ข้อมูลจริง 51 แท่ง (วันนี้ + Volume SMA50
+ของ 50 วันก่อนหน้า · 10 วันก่อนหน้าอยู่ในนั้น) → กรองด้วย MIN_BARS เหมือนหุ้นอื่น · ติดป้ายด้วย
+History_Days / Is_New_Listing (นิยามเดียวกับ combined.json ใน convert_to_json) · scanner อื่นยังไม่รับ IPO
+
 Output: ppbp_result.csv
-  Columns: Ticker, Price, Volume, Avg50Vol, MaxDownVol10D, Signal
+  Columns: Ticker, Price, Volume, Avg50Vol, MaxDownVol10D, Signal, History_Days, Is_New_Listing
 """
 import pandas as pd
 import warnings
@@ -17,12 +21,13 @@ from pathlib import Path
 warnings.filterwarnings('ignore')
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
-from config import HISTORY_DIR
+from config import HISTORY_DIR, NEW_LISTING_DAYS
 from utils import iter_stock_files, load_fund_tickers
 
 OUTPUT_FILE = Path(__file__).resolve().parents[2] / 'data' / 'results' / 'ppbp_result.csv'
 
 MIN_BARS = 55  # 50 สำหรับ Volume SMA + 5 buffer
+COLUMNS = ['Ticker', 'Price', 'Volume', 'Avg50Vol', 'MaxDownVol10D', 'Signal', 'History_Days', 'Is_New_Listing']
 
 
 def scan_ppbp():
@@ -35,7 +40,8 @@ def scan_ppbp():
     results = []
 
     fund_tickers = load_fund_tickers()
-    for file_path in sorted(iter_stock_files(HISTORY_DIR)):
+    # include_short_history: IPO ที่มีแท่งพอ (≥ MIN_BARS) เข้า PPBP ได้ — แบบเดียวกับ stage scanner
+    for file_path in sorted(iter_stock_files(HISTORY_DIR, include_short_history=True)):
         ticker = file_path.stem
         if ticker.upper() in fund_tickers:  # กองทุน/REIT ไม่เข้า scanner หุ้น
             continue
@@ -74,12 +80,14 @@ def scan_ppbp():
                 'Avg50Vol': int(round(vol_sma50)),
                 'MaxDownVol10D': int(round(max_down_vol)),
                 'Signal': 'PPBP',
+                'History_Days': len(df),
+                'Is_New_Listing': len(df) < NEW_LISTING_DAYS,
             })
 
         except Exception:
             pass
 
-    cols = ['Ticker', 'Price', 'Volume', 'Avg50Vol', 'MaxDownVol10D', 'Signal']
+    cols = COLUMNS
     if results:
         df_out = pd.DataFrame(results, columns=cols).sort_values('Ticker').reset_index(drop=True)
         df_out.to_csv(OUTPUT_FILE, index=False, encoding='utf-8-sig')
@@ -91,7 +99,7 @@ def scan_ppbp():
 
 
 def _write_empty():
-    pd.DataFrame(columns=['Ticker', 'Price', 'Volume', 'Avg50Vol', 'MaxDownVol10D', 'Signal']).to_csv(
+    pd.DataFrame(columns=COLUMNS).to_csv(
         OUTPUT_FILE, index=False, encoding='utf-8-sig'
     )
 
