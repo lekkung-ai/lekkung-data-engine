@@ -29,6 +29,10 @@ working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ข�
   H10 data/scans/macro_commodities.json (หน้า /macro): ราคาล่าสุด (latest.date) ของแต่ละตัวแปร
       ไม่เก่ากว่าวันอ้างอิงเกิน MACRO_MAX_BUSINESS_DAYS วันทำการ · ตัวที่เก่ากว่า → FAIL พร้อมรายชื่อ
       (fetch_macro ใช้ค่าล่าสุดที่ดีแทนเมื่อดึงไม่ได้ → ไฟล์สดแต่ราคาค้างได้ ข้อนี้จับรายตัว)
+  H11 (WARN) วันข้อมูลหาย (ตลาดเปิดแต่ Yahoo ส่งแถวสำเนา Volume 0 มาแทนข้อมูลจริงของหุ้นจำนวนมาก ·
+      2_download_history ตัดแถวสำเนาทิ้งแล้วเขียน data/results/missing_data_days.json): มีวันข้อมูลหาย
+      ภายใน MISSING_DATA_RECENT_BUSINESS_DAYS วันทำการก่อนวันอ้างอิง → WARN พร้อมรายชื่อวัน · วันที่เก่ากว่า
+      (Yahoo ส่งช่วงปี 2024 มาทุกรอบ) แสดงเป็นจำนวนเท่านั้น · ไม่มีไฟล์ → WARN
 
 วันที่ตลาดไม่เปิด (--non-trading-day = run_all.py ข้ามทั้งรอบ "NON_TRADING_DAY"): ไม่มีอะไรถูก
 copy / push ในรอบนั้น → ข้อที่เทียบกับ "run นี้" (H3 generated_at ของ run นี้, H4 combined.json เทียบ
@@ -96,6 +100,9 @@ MACRO_MAX_BUSINESS_DAYS = 2
 # (คอลัมน์ "time") ตั้งแต่ 2026-10-19 → ตรวจได้เหมือนตัวอื่น · นับวันทำการ จันทร์–ศุกร์ ไม่รู้วันหยุดของ
 # ตลาดต้นทาง → วันหยุดยาวของจีน (ตรุษจีน / Golden Week ~5 วันทำการ) SHFE_RU จะ FAIL ช่วงนั้นแบบมีเสียง
 MACRO_ALLOWLIST: Dict[str, str] = {}
+# H11 — วันข้อมูลหาย (2_download_history.write_missing_data_days)
+MISSING_DATA_JSON = RESULTS_DIR / "missing_data_days.json"
+MISSING_DATA_RECENT_BUSINESS_DAYS = 20
 # H8 — JSON ของ scanner หุ้น (เลือกหุ้นเข้าซื้อ) ที่ต้องไม่มีกองทุน/REIT · scanner ด้าน stage
 # (market_stage / stage_all / weinstein) ยังมีกองทุนตามปกติ จึงไม่อยู่ในนี้
 FUND_FREE_SCANS = ("sepa.json", "oliver_kell.json", "breakout.json", "ppbp.json", "lekkung.json", "oneil.json",
@@ -372,6 +379,28 @@ def check_h10(git: Git, ref: date) -> List[Result]:
              f"stale={stale or 'none'} · checked={checked}/{len(items)} · allowlist={sorted(MACRO_ALLOWLIST) or 'none'}")]
 
 
+def check_h11(path: Path, ref: date) -> List[Result]:
+    title = f"no missing-data day in the last {MISSING_DATA_RECENT_BUSINESS_DAYS} business days"
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+        days = [x for x in d.get("days") or [] if isinstance(x, dict) and x.get("date")]
+    except (OSError, ValueError) as e:
+        return [("H11", title, WARN, f"{path.name} not readable ({e.__class__.__name__}) - 2_download_history did not write it")]
+    recent, older = [], 0
+    for x in days:
+        try:
+            age = busdays(date.fromisoformat(str(x["date"])[:10]), ref)
+        except ValueError:
+            continue
+        if 0 <= age <= MISSING_DATA_RECENT_BUSINESS_DAYS:
+            recent.append(f"{x['date']} ({x.get('copy_rows')}/{x.get('rows')} copy rows dropped)")
+        else:
+            older += 1
+    return [("H11", title, WARN if recent else True,
+             f"recent={recent or 'none'} · older days in the 3y download={older} · "
+             f"copy rows dropped this run={d.get('rows_dropped', '?')}")]
+
+
 # ------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -384,6 +413,8 @@ def main() -> int:
     ap.add_argument("--run-start",
                     help="ISO time this run started - daily-scan.yml passes $RUN_START "
                          "(missing/empty: fall back to mtime of run_all.py + WARNING)")
+    ap.add_argument("--missing-data-file", type=Path, default=MISSING_DATA_JSON,
+                    help="missing_data_days.json written by 2_download_history this run (H11)")
     ap.add_argument("--non-trading-day", action="store_true",
                     help="run_all.py skipped this run (NON_TRADING_DAY): skip H3/H4/H5/H6, which check this run's output, and H10")
     args = ap.parse_args()
@@ -427,6 +458,8 @@ def main() -> int:
         results += check_h9(git, ref)
     if ref is not None and not args.non_trading_day:
         results += check_h10(git, ref)
+    if ref is not None:
+        results += check_h11(args.missing_data_file, ref)
 
     print()
     w = max(len(r[1]) for r in results)
