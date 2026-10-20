@@ -21,18 +21,20 @@ import yfinance as yf
 try:
     from tools.core.settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
     from tools.core.set_index_source import update_set_index_csv, update_set_index_volume
-    from tools.core.trading_calendar import SET_INDEX_FILE, drop_dates, holiday_dates, index_dates
+    from tools.core.trading_calendar import (MISSING_DATA_SHARE, SET_INDEX_FILE, drop_copy_rows, drop_dates,
+                                             holiday_dates, index_dates, missing_data_days)
 except ImportError:
     from settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
     from set_index_source import update_set_index_csv, update_set_index_volume
-    from trading_calendar import SET_INDEX_FILE, drop_dates, holiday_dates, index_dates
+    from trading_calendar import (MISSING_DATA_SHARE, SET_INDEX_FILE, drop_copy_rows, drop_dates,
+                                  holiday_dates, index_dates, missing_data_days)
 
 warnings.filterwarnings("ignore")
 
 
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
-from config import (CHUNK_SIZE, DAILY_FILE, FULL_HISTORY_MIN_ROWS, FUND_WORKERS, HISTORY_DIR,
+from config import (CHUNK_SIZE, DAILY_FILE, FULL_HISTORY_MIN_ROWS, FUND_WORKERS, HISTORY_DIR, RESULTS_DIR,
                     PRICE_FALLBACK_MAX_STALE_BUSINESS_DAYS,
                     PRICE_FALLBACK_WARN_PCT, SET_INDEX_FETCH_PERIOD,
                     SET_INDEX_YF_SYMBOL, SHORT_HISTORY_FILE, SHORT_HISTORY_MIN_ROWS,
@@ -237,10 +239,11 @@ def add_indicator_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def drop_holiday_rows_from_files(holidays, skip: set) -> Tuple[int, int]:
-    """ตัดแถววันหยุดออกจากไฟล์หุ้นที่รอบนี้ไม่ได้เขียนใหม่ (stale fallback / ticker ที่หลุด universe)
-    แล้วคำนวณคอลัมน์ SMA/52W ใหม่ · ไม่แตะ SET_INDEX.csv · คืน (จำนวนไฟล์, จำนวนแถว) ที่ตัด"""
-    if not holidays:
+def drop_holiday_rows_from_files(holidays, skip: set, missing_days=None) -> Tuple[int, int]:
+    """ตัดแถววันหยุด + แถวสำเนาในวันข้อมูลหาย (missing_days) ออกจากไฟล์หุ้นที่รอบนี้ไม่ได้เขียนใหม่
+    (stale fallback / ticker ที่หลุด universe) แล้วคำนวณคอลัมน์ SMA/52W ใหม่ · ไม่แตะ SET_INDEX.csv
+    · คืน (จำนวนไฟล์, จำนวนแถว) ที่ตัด"""
+    if not holidays and not missing_days:
         return 0, 0
     files = rows = 0
     for path in HISTORY_DIR.glob("*.csv"):
@@ -253,7 +256,7 @@ def drop_holiday_rows_from_files(holidays, skip: set) -> Tuple[int, int]:
             continue
         if not isinstance(df.index, pd.DatetimeIndex):
             continue
-        cleaned = drop_dates(df, holidays)
+        cleaned = drop_copy_rows(drop_dates(df, holidays), missing_days)
         if len(cleaned) == len(df):
             continue
         if {"Close", "High", "Low"} <= set(cleaned.columns):
@@ -262,6 +265,23 @@ def drop_holiday_rows_from_files(holidays, skip: set) -> Tuple[int, int]:
         files += 1
         rows += len(df) - len(cleaned)
     return files, rows
+
+
+MISSING_DATA_FILE = RESULTS_DIR / "missing_data_days.json"
+
+
+def write_missing_data_days(days: Dict[Any, Tuple[int, int]], dropped: int) -> None:
+    """MISSING_DATA_FILE: วันข้อมูลหายที่เจอในข้อมูลที่โหลดรอบนี้ (trading_calendar.missing_data_days)
+    — health_check H11 อ่าน · เขียนทุกรอบ (ว่างก็เขียน) ไม่ให้รายการเก่าค้าง"""
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "threshold_share": MISSING_DATA_SHARE,
+        "rows_dropped": dropped,
+        "days": [{"date": str(d), "copy_rows": c, "rows": n, "share": round(c / n, 4)}
+                 for d, (c, n) in sorted(days.items())],
+    }
+    MISSING_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    MISSING_DATA_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
 
 def write_short_history(short_history: Dict[str, int]) -> None:
@@ -472,8 +492,22 @@ def download_history_and_build_snapshot() -> None:
     if holidays:
         print(f"\n🗓️ [Holiday] ตัดแถววันที่ตลาดไม่เปิด {len(holidays)} วัน: {', '.join(sorted(map(str, holidays)))}")
 
+    # 🕳️ [Missing data] วันที่ตลาดเปิดแต่ Yahoo ไม่มีข้อมูลหุ้นจำนวนมาก — Yahoo ส่ง "แถวสำเนา" (Volume 0,
+    # OHLC = ราคาปิดวันก่อน) มาแทน → ตัดแถวสำเนาของวันนั้นทิ้ง ไม่เติมค่าเอง (นิยามดู trading_calendar.py)
+    fresh = {t: drop_dates(df, holidays) for t, df in fresh.items()}
+    missing = missing_data_days(fresh)
+    missing_rows = 0
+    if missing:
+        before_rows = sum(len(df) for df in fresh.values())
+        fresh = {t: drop_copy_rows(df, set(missing)) for t, df in fresh.items()}
+        missing_rows = before_rows - sum(len(df) for df in fresh.values())
+        print(f"\n🕳️ [Missing data] วันข้อมูลหาย {len(missing)} วัน (แถวสำเนา ≥ {MISSING_DATA_SHARE:.0%}) "
+              f"— ตัดแถวสำเนา {missing_rows} แถว: "
+              + ", ".join(f"{d}({c}/{n})" for d, (c, n) in sorted(missing.items())))
+    write_missing_data_days(missing, missing_rows)
+
     for ticker, df in fresh.items():
-        row = build_snapshot_row(ticker, drop_dates(df, holidays), today.strftime("%Y-%m-%d"), fallback=False)
+        row = build_snapshot_row(ticker, df, today.strftime("%Y-%m-%d"), fallback=False)
         if row is not None:
             daily_snapshot.append(row)
             valid_tickers.append(ticker)
@@ -482,9 +516,9 @@ def download_history_and_build_snapshot() -> None:
             still_failed.append(ticker)
 
     # ไฟล์ที่รอบนี้ไม่ได้เขียนใหม่ (stale fallback / ticker ที่หลุด universe) ก็ต้องไม่มีแถววันหยุดค้าง
-    cleaned_files, cleaned_rows = drop_holiday_rows_from_files(holidays, skip=set(fresh))
+    cleaned_files, cleaned_rows = drop_holiday_rows_from_files(holidays, skip=set(fresh), missing_days=set(missing))
     if cleaned_files:
-        print(f"   🗓️ [Holiday] ไฟล์ที่ไม่ได้โหลดใหม่: ตัด {cleaned_rows} แถวจาก {cleaned_files} ไฟล์")
+        print(f"   🗓️ [Holiday/Missing] ไฟล์ที่ไม่ได้โหลดใหม่: ตัด {cleaned_rows} แถวจาก {cleaned_files} ไฟล์")
 
     if still_failed:
         for ticker in still_failed:
