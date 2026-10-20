@@ -19,6 +19,16 @@ holiday when BOTH
 The volume rule alone is not enough: Yahoo's older history also has whole trading days copied
 from the previous close with Volume 0 (e.g. 2024-03-12, 2025-10-07 - SET_INDEX has those days),
 and dropping them would delete real trading days.
+
+Missing-data days (Yahoo has no data for many stocks on a day the market WAS open): Yahoo sends a
+"copy" row for those stocks - Volume 0 and Open/High/Low/Close = the previous Close. A few copies
+are normal (illiquid stocks that did not trade: 2-6% of the universe per day since 2025-06), but
+on a missing-data day the share jumps (2025-10-07: 99.5%, 2026-05-26: 20%, 65 days of 20-99% in
+2024). A date is a missing-data day when copy rows are >= MISSING_DATA_SHARE of the stocks with a
+row that day; on such a day every copy row is dropped (never filled in), so the files hold real
+bars only. Everything downstream counts bars (RS iloc[-n], SMA/52W rolling rows, ADTV tail(n),
+History_Days) and simply sees one bar less for that stock; breadth (a date grid) computes each
+stock's MAs on its own bars - see calculate_breadth.compute_breadth_matrix.
 """
 
 import sys
@@ -33,6 +43,9 @@ from tools.scanner.utils import NON_STOCK_FILES, last_traded_date  # noqa: E402
 
 SET_INDEX_FILE = "SET_INDEX.csv"
 MIN_ACTIVE_SHARE = 0.5
+# copy-row share that marks a missing-data day: ~2x the normal daily maximum (5.9% since 2025-06,
+# 95th percentile 5.0%) and below the smallest real gap seen (2026-05-26: 20.3%)
+MISSING_DATA_SHARE = 0.10
 
 
 def reference_date(history_dir: Path) -> Optional[date]:
@@ -112,4 +125,45 @@ def drop_dates(df: pd.DataFrame, dates: Set[date]) -> pd.DataFrame:
     if not dates or df.empty:
         return df
     keep = [ts.date() not in dates for ts in df.index]
+    return df[keep]
+
+
+def copy_rows(df: pd.DataFrame) -> pd.Series:
+    """True for rows that only repeat the previous bar: Volume 0 and Open = High = Low = Close = previous Close"""
+    if df is None or df.empty or len(df) < 2:
+        return pd.Series(False, index=getattr(df, "index", None), dtype=bool)
+    def col(name: str) -> pd.Series:
+        c = df[name]
+        return pd.to_numeric(c.iloc[:, 0] if isinstance(c, pd.DataFrame) else c, errors="coerce")
+    close = col("Close")
+    prev = close.shift(1)
+    vol0 = col("Volume").fillna(0) == 0
+    same = vol0 & prev.notna()
+    for name in ("Open", "High", "Low", "Close"):
+        same &= (col(name) - prev).abs() <= 1e-9 * prev.abs().clip(lower=1)
+    return same.fillna(False)
+
+
+def missing_data_days(frames: Mapping[str, pd.DataFrame]) -> dict:
+    """{date: (copy rows, rows)} for every date whose copy-row share >= MISSING_DATA_SHARE"""
+    rows: dict = {}
+    copies: dict = {}
+    for df in frames.values():
+        if df is None or df.empty:
+            continue
+        flags = copy_rows(df)
+        for ts, is_copy in zip(df.index, flags.to_numpy()):
+            d = ts.date()
+            rows[d] = rows.get(d, 0) + 1
+            if is_copy:
+                copies[d] = copies.get(d, 0) + 1
+    return {d: (copies[d], n) for d, n in rows.items() if copies.get(d, 0) >= MISSING_DATA_SHARE * n}
+
+
+def drop_copy_rows(df: pd.DataFrame, days) -> pd.DataFrame:
+    """df without its copy rows on the given missing-data days (real bars on those days stay)"""
+    if not days or df is None or df.empty:
+        return df
+    flags = copy_rows(df).to_numpy()
+    keep = [not (f and ts.date() in days) for ts, f in zip(df.index, flags)]
     return df[keep]
