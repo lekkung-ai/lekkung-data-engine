@@ -135,6 +135,10 @@ FTD_DD_RULE_TEXT = (
 )
 
 
+# breadth date kept only when at least this share of the usual number of stocks have a real bar
+BREADTH_MIN_DAY_SHARE = 0.5
+
+
 def compute_ftd_dd(set_df: pd.DataFrame) -> list[str | None]:
     n = len(set_df)
     marker: list[str | None] = [None] * n
@@ -180,19 +184,31 @@ def compute_ftd_dd(set_df: pd.DataFrame) -> list[str | None]:
 
 # ─── Breadth stats (%เหนือ MA, %52W high/low ใหม่) ─────────────────────────────
 
+def _rolling_own_bars(close_df: pd.DataFrame, window: int, how: str) -> pd.DataFrame:
+    """rolling mean/max/min of each stock over its OWN bars, put back on the date grid.
+    A stock with no bar on some date (missing-data day, trading_calendar.missing_data_days) has a NaN
+    there; rolling over the date grid would then blank its MA for `window` dates afterwards. Without
+    such gaps the result is identical to close_df.rolling(window, min_periods=window)."""
+    cols = {}
+    for c in close_df.columns:
+        own = close_df[c].dropna().rolling(window, min_periods=window)
+        cols[c] = getattr(own, how)().reindex(close_df.index)
+    return pd.DataFrame(cols, index=close_df.index)
+
+
 def compute_breadth_matrix(close_df: pd.DataFrame) -> pd.DataFrame:
     result = pd.DataFrame(index=close_df.index)
 
     for period in BREADTH_MA_PERIODS:
-        ma = close_df.rolling(period, min_periods=period).mean()
+        ma = _rolling_own_bars(close_df, period, "mean")
         valid = ma.notna() & close_df.notna()
         denom = valid.sum(axis=1)
         numer = ((close_df > ma) & valid).sum(axis=1)
         result[f"pct_above_ma{period}"] = (numer / denom * 100).round(2)
         result[f"denom_ma{period}"] = denom
 
-    roll_max = close_df.rolling(NEW_HIGH_LOW_WINDOW, min_periods=NEW_HIGH_LOW_WINDOW).max()
-    roll_min = close_df.rolling(NEW_HIGH_LOW_WINDOW, min_periods=NEW_HIGH_LOW_WINDOW).min()
+    roll_max = _rolling_own_bars(close_df, NEW_HIGH_LOW_WINDOW, "max")
+    roll_min = _rolling_own_bars(close_df, NEW_HIGH_LOW_WINDOW, "min")
     valid_hl = roll_max.notna() & close_df.notna()
     denom_hl = valid_hl.sum(axis=1)
     result["pct_new_52wh"] = (((close_df >= roll_max) & valid_hl).sum(axis=1) / denom_hl * 100).round(2)
@@ -270,7 +286,15 @@ def main():
     close_df = close_df.reindex(set_df.index)  # บังคับ align วันที่ให้ตรงกับ SET Index ทุกกราฟ
 
     valid_rows = close_df.notna().any(axis=1)
-    close_df = close_df[valid_rows]
+    # a date where most stocks have no real bar (missing-data day whose copy rows were dropped, e.g.
+    # 2025-10-07) would give a breadth reading from a handful of stocks → leave that date out
+    n_bars = close_df.notna().sum(axis=1)
+    usual = n_bars.rolling(21, center=True, min_periods=1).median()
+    thin = valid_rows & (n_bars < BREADTH_MIN_DAY_SHARE * usual)
+    if thin.any():
+        print(f"  ⚠️ [Breadth] ข้าม {int(thin.sum())} วันที่หุ้นมีข้อมูลจริงไม่ถึง {BREADTH_MIN_DAY_SHARE:.0%} ของปกติ: "
+              + ", ".join(d.strftime("%Y-%m-%d") for d in close_df.index[thin]))
+    close_df = close_df[valid_rows & ~thin]
     set_df = set_df.loc[close_df.index]
 
     breadth_df = compute_breadth_matrix(close_df)
