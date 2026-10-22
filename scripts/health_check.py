@@ -33,6 +33,11 @@ working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ข�
       2_download_history ตัดแถวสำเนาทิ้งแล้วเขียน data/results/missing_data_days.json): มีวันข้อมูลหาย
       ภายใน MISSING_DATA_RECENT_BUSINESS_DAYS วันทำการก่อนวันอ้างอิง → WARN พร้อมรายชื่อวัน · วันที่เก่ากว่า
       (Yahoo ส่งช่วงปี 2024 มาทุกรอบ) แสดงเป็นจำนวนเท่านั้น · ไม่มีไฟล์ → WARN
+  H12 public/data/history/index.json (หน้า Big Lot เลือกวันของกราฟ 15 วันจากไฟล์นี้ · stockdesk
+      scripts/build_history_index.py สร้างจากโฟลเดอร์ท้าย save_biglot.py): รายการวัน = ชุดโฟลเดอร์
+      public/data/history/<วัน>/ ที่มี biglot.json พอดี (วันล่าสุดใน index = โฟลเดอร์ล่าสุด; ค้าง/ขาด/เกิน → FAIL
+      พร้อมรายชื่อวัน) · (WARN) โฟลเดอร์ Big Lot ล่าสุดเก่ากว่าวันอ้างอิงเกิน BIGLOT_MAX_BUSINESS_DAYS วันทำการ (นับจากแท่ง SET_INDEX.csv จึงไม่นับวันหยุดพิเศษ)
+      (ต้นทาง RYT9 ไม่ออก / save_biglot.py ไม่ได้เซฟ — คนละเรื่องกับ index ค้าง)
 
 วันที่ตลาดไม่เปิด (--non-trading-day = run_all.py ข้ามทั้งรอบ "NON_TRADING_DAY"): ไม่มีอะไรถูก
 copy / push ในรอบนั้น → ข้อที่เทียบกับ "run นี้" (H3 generated_at ของ run นี้, H4 combined.json เทียบ
@@ -52,6 +57,7 @@ Usage:
 import argparse
 import json
 import math
+import re
 import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -66,7 +72,7 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 from config import HISTORY_DIR, RESULTS_DIR  # noqa: E402
-from tools.core.trading_calendar import last_csv_date, reference_date  # noqa: E402
+from tools.core.trading_calendar import index_dates, last_csv_date, reference_date  # noqa: E402
 from tools.scanner.utils import NON_STOCK_FILES, is_fund_ticker  # noqa: E402
 
 BANGKOK_TZ = timezone(timedelta(hours=7))
@@ -103,6 +109,10 @@ MACRO_ALLOWLIST: Dict[str, str] = {}
 # H11 — วันข้อมูลหาย (2_download_history.write_missing_data_days)
 MISSING_DATA_JSON = RESULTS_DIR / "missing_data_days.json"
 MISSING_DATA_RECENT_BUSINESS_DAYS = 20
+# H12 — วัน Big Lot ที่หน้า /top-movers/biglot ใช้ (public/data/history/<วัน>/biglot.json + index.json)
+HISTORY_INDEX = "public/data/history/index.json"
+BIGLOT_FILE_RE = re.compile(r"^public/data/history/(\d{4}-\d{2}-\d{2})/biglot\.json$")
+BIGLOT_MAX_BUSINESS_DAYS = 2
 # H8 — JSON ของ scanner หุ้น (เลือกหุ้นเข้าซื้อ) ที่ต้องไม่มีกองทุน/REIT · scanner ด้าน stage
 # (market_stage / stage_all / weinstein) ยังมีกองทุนตามปกติ จึงไม่อยู่ในนี้
 FUND_FREE_SCANS = ("sepa.json", "oliver_kell.json", "breakout.json", "ppbp.json", "lekkung.json", "oneil.json",
@@ -120,6 +130,11 @@ class Git:
     def read(self, path: str, rev: Optional[str] = None) -> Optional[bytes]:
         r = self._run("show", f"{rev or self.rev}:{path}")
         return r.stdout if r.returncode == 0 else None
+
+    def list_files(self, prefix: str) -> Optional[List[str]]:
+        """paths of every file under prefix at rev (ls-tree: ไม่แตะ working tree · ใช้ได้กับ shallow checkout)"""
+        r = self._run("ls-tree", "-r", "--name-only", self.rev, "--", prefix)
+        return r.stdout.decode("utf-8").splitlines() if r.returncode == 0 else None
 
     def commits_touching(self, path: str, n: int) -> List[str]:
         r = self._run("log", "-n", str(n), "--format=%H", self.rev, "--", path)
@@ -401,6 +416,46 @@ def check_h11(path: Path, ref: date) -> List[Result]:
              f"copy rows dropped this run={d.get('rows_dropped', '?')}")]
 
 
+def check_h12(git: Git, history_dir: Path, ref: date) -> List[Result]:
+    title = "history index.json = Big Lot folders (latest day + every day)"
+    files = git.list_files("public/data/history/")
+    folders = sorted({m.group(1) for f in files or [] if (m := BIGLOT_FILE_RE.match(f))})
+    if not folders:
+        return [("H12", title, False, "no public/data/history/<date>/biglot.json found at rev")]
+    raw = git.read(HISTORY_INDEX)
+    if raw is None:
+        return [("H12", title, False, f"{HISTORY_INDEX} not found (folders latest={folders[-1]})")]
+    try:
+        idx = load_json(raw)[0]
+        if not isinstance(idx, list) or not all(isinstance(x, str) for x in idx):
+            raise TypeError("not a list of dates")
+    except (ValueError, UnicodeDecodeError, TypeError) as e:
+        return [("H12", title, False, f"{HISTORY_INDEX} not readable ({e.__class__.__name__}: {e})")]
+    index_last = max(idx, default=None)
+    missing = sorted(set(folders) - set(idx))  # folder has biglot.json, index does not list it
+    extra = sorted(set(idx) - set(folders))    # index lists a day with no biglot.json
+    ok = index_last == folders[-1] and not missing and not extra
+
+    def short(xs: List[str]) -> Any:
+        return (xs if len(xs) <= 5 else xs[:2] + ["..."] + xs[-2:]) or "none"
+
+    out: List[Result] = [("H12", title, ok,
+                          f"index last={index_last} folders last={folders[-1]} · index={len(idx)} folders={len(folders)} · "
+                          f"missing from index={short(missing)} ({len(missing)}) · not a folder={short(extra)} ({len(extra)})")]
+    # นับ "วันทำการ" จากแท่ง SET_INDEX.csv (TradingView ไม่มีแท่งวันหยุด → วันหยุดพิเศษเช่น 2026-10-16 ไม่ถูกนับ)
+    # ไม่มี/อ่านไม่ได้ SET_INDEX.csv → ถอยไปนับจันทร์–ศุกร์
+    last = date.fromisoformat(folders[-1])
+    days = index_dates(history_dir / "SET_INDEX.csv")
+    if days:
+        age, unit = sum(1 for d in days if last < d <= ref), "trading days"
+    else:
+        age, unit = busdays(last, ref), "bdays (no SET_INDEX.csv)"
+    out.append(("H12", f"latest Big Lot folder not older than {BIGLOT_MAX_BUSINESS_DAYS} trading days vs ref",
+                True if age <= BIGLOT_MAX_BUSINESS_DAYS else WARN,
+                f"latest={folders[-1]} ({age} {unit} before ref {ref}) - upstream (RYT9) or save_biglot.py, not the index"))
+    return out
+
+
 # ------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -460,6 +515,7 @@ def main() -> int:
         results += check_h10(git, ref)
     if ref is not None:
         results += check_h11(args.missing_data_file, ref)
+        results += check_h12(git, args.history_dir, ref)
 
     print()
     w = max(len(r[1]) for r in results)
