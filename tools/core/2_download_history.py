@@ -20,15 +20,15 @@ import pandas as pd
 import yfinance as yf
 
 try:
-    from tools.core.growth_period import (annual_is_fresh, fy_end_month, quarter_is_fresh, quarter_label,
-                                          short_fy, short_quarter, to_date)
+    from tools.core.growth_period import (annual_is_fresh, fy_end_month, growth_vs_year_ago, quarter_is_fresh,
+                                          quarter_label, short_fy, short_quarter, to_date)
     from tools.core.settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
     from tools.core.set_index_source import update_set_index_csv, update_set_index_volume
     from tools.core.trading_calendar import (MISSING_DATA_SHARE, SET_INDEX_FILE, drop_copy_rows, drop_dates,
                                              holiday_dates, index_dates, missing_data_days)
 except ImportError:
-    from growth_period import (annual_is_fresh, fy_end_month, quarter_is_fresh, quarter_label,
-                               short_fy, short_quarter, to_date)
+    from growth_period import (annual_is_fresh, fy_end_month, growth_vs_year_ago, quarter_is_fresh,
+                               quarter_label, short_fy, short_quarter, to_date)
     from settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
     from set_index_source import update_set_index_csv, update_set_index_volume
     from trading_calendar import (MISSING_DATA_SHARE, SET_INDEX_FILE, drop_copy_rows, drop_dates,
@@ -57,6 +57,9 @@ RETRY_SLEEP_SEC = 2.0
 # คืนค่าว่างแบบสุ่ม ~40% ต่อ request โดยไม่มี error ให้ retry จับได้ในรอบเดียว)
 GROWTH_CACHE_FILE = HISTORY_DIR.parent / "cache" / "growth_cache.csv"
 GROWTH_CACHE_MAX_AGE_DAYS = 100  # ~1 ไตรมาส เกินนี้ถือว่าหมดอายุ ไม่เอามาเติม
+# วิธีคำนวณของค่าใน cache (คอลัมน์ {col}_calc) — ใช้เติมได้เฉพาะค่าที่คำนวณด้วยวิธีปัจจุบัน
+# 2 = เทียบงวดเดียวกันปีก่อนตามวันที่ (growth_vs_year_ago) · ไม่มี/ต่ำกว่า = shift(4)/iloc ตามตำแหน่ง (ผิดเมื่อมีงวดขาด)
+GROWTH_CALC_VERSION = 2
 
 
 def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
@@ -72,24 +75,16 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
         # 1. ดึงข้อมูลงบการเงินรายไตรมาส
         qf = stock.quarterly_financials
 
-        # 2. ตรวจสอบว่ามีข้อมูล 'Net Income' และมีข้อมูลพอ (อย่างน้อย 5 ไตรมาส = ไตรมาสล่าสุด + ไตรมาสเดียวกันปีก่อน)
-        # ไม่พอ (IPO / Yahoo ส่งงบมาไม่ครบ) → QoQY = None + เหตุผล แต่ field อื่นยังคำนวณต่อ
-        # (เดิม qoqy_series ไม่ถูกสร้าง → NameError → except ทำให้ทุก field ของแถวเป็น None)
+        # 2. QoQY = ไตรมาสล่าสุด เทียบไตรมาสที่ period end ห่าง 12 เดือนพอดี (growth_vs_year_ago — ตามวันที่
+        # ไม่ใช่ shift(4) ตามตำแหน่ง ซึ่งผิดเมื่อ Yahoo มีไตรมาสขาด) · ไม่มีไตรมาสนั้น (IPO / Yahoo ส่งงบมาไม่ครบ)
+        # → QoQY = None + เหตุผล แต่ field อื่นยังคำนวณต่อ (ไม่เดา ไม่เทียบไตรมาสอื่นแทน)
         if qf.empty or "Net Income" not in qf.index:
             qoqy_note = "ไม่มีงบรายไตรมาส"
-        elif len(qf.columns) < 5:
-            qoqy_note = f"ไตรมาสไม่พอ ({len(qf.columns)}/5)"
         else:
-            net_income = qf.loc["Net Income"].sort_index()
-
-            # 3. คำนวณ QoQY ตามสูตร
-            qoqy_series = (
-                (net_income - net_income.shift(4)) / net_income.shift(4).abs() * 100
-            )
-
-            # 4. ดึงค่าล่าสุดมาใช้งาน
-            qoqy_growth = qoqy_series.iloc[-1]
-            qoqy_ref_period = qoqy_series.index[-1]
+            n_q = len(qf.columns)
+            g, qoqy_ref_period, qoqy_note = growth_vs_year_ago(
+                qf.loc["Net Income"], f"ไตรมาสไม่พอ ({n_q}/5)" if n_q < 5 else "ไม่มีไตรมาสเดียวกันปีก่อน")
+            qoqy_growth = None if g is None else g * 100
 
         # --- 💡 ส่วนคำนวณ Annual Revenue Growth & Annual Net Income Growth ---
         ann_rev_growth = None
@@ -98,17 +93,11 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
         ann_profit_ref_period = None
         f = stock.financials
         if not f.empty:
-            if "Total Revenue" in f.index and len(f.columns) >= 2:
-                rev = f.loc["Total Revenue"].sort_index(ascending=False)
-                ann_rev_series = (rev.iloc[0] - rev.iloc[1]) / abs(rev.iloc[1])
-                ann_rev_growth = ann_rev_series
-                ann_rev_ref_period = rev.index[0]
-
-            if "Net Income" in f.index and len(f.columns) >= 2:
-                ni = f.loc["Net Income"].sort_index(ascending=False)
-                ann_profit_series = (ni.iloc[0] - ni.iloc[1]) / abs(ni.iloc[1])
-                ann_profit_growth = ann_profit_series
-                ann_profit_ref_period = ni.index[0]
+            # ปีล่าสุด เทียบปีที่ period end ห่าง 12 เดือนพอดี (ตามวันที่ · ไม่มีปีนั้น → None ไม่เทียบปีอื่นแทน)
+            if "Total Revenue" in f.index:
+                ann_rev_growth, ann_rev_ref_period, _ = growth_vs_year_ago(f.loc["Total Revenue"])
+            if "Net Income" in f.index:
+                ann_profit_growth, ann_profit_ref_period, _ = growth_vs_year_ago(f.loc["Net Income"])
 
         # --- ส่วนดึงข้อมูล Snapshot เดิม ---
         info = stock.info
@@ -162,6 +151,8 @@ def _save_growth_cache(cache: Dict[str, Dict[str, Any]]) -> None:
         "NetProfit_Growth_QoQY",
         "NetProfit_Growth_QoQY_ref_period",
         "NetProfit_Growth_QoQY_fetched_date",
+        "Revenue_Growth_YoY_calc",
+        "NetProfit_Growth_QoQY_calc",
     ]
     df = pd.DataFrame(list(cache.values()))
     if df.empty:
@@ -216,7 +207,9 @@ def apply_growth_cache_fallback(fundamental_data: Dict[str, Dict[str, Any]], tod
             data[f"{col}_src"] = "yahoo"
             # อ่าน cache ก่อนเขียนทับด้วยค่ารอบนี้
             cached_val, cached_ref = entry.get(col), entry.get(f"{col}_ref_period")
-            cache_usable = _is_fresh(entry.get(f"{col}_fetched_date")) and _has_value(cached_val)
+            cache_usable = (_is_fresh(entry.get(f"{col}_fetched_date")) and _has_value(cached_val)
+                            and _has_value(entry.get(f"{col}_calc"))
+                            and int(float(entry[f"{col}_calc"])) == GROWTH_CALC_VERSION)
             cache_ok = cache_usable and is_period_fresh(cached_ref)
             live_ok = data.get(col) is not None and is_period_fresh(ref)
             # งวดใหม่ที่สุดชนะ · งวดเท่ากัน → ค่ารอบนี้ (Yahoo) ก่อน cache
@@ -225,6 +218,7 @@ def apply_growth_cache_fallback(fundamental_data: Dict[str, Dict[str, Any]], tod
                 entry[col] = data[col]
                 entry[f"{col}_ref_period"] = str(ref)[:10] if ref is not None else None
                 entry[f"{col}_fetched_date"] = today_str
+                entry[f"{col}_calc"] = GROWTH_CALC_VERSION
             if live_ok and not cache_newer:
                 continue
             if not cache_usable:
