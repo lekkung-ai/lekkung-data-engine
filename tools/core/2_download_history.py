@@ -24,15 +24,17 @@ try:
                                           quarter_label, short_fy, short_quarter, to_date)
     from tools.core.settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
     from tools.core.set_index_source import update_set_index_csv, update_set_index_volume
+    from tools.core.price_freshness import build_payload, write_payload
     from tools.core.trading_calendar import (MISSING_DATA_SHARE, SET_INDEX_FILE, drop_copy_rows, drop_dates,
-                                             holiday_dates, index_dates, missing_data_days)
+                                             holiday_dates, index_dates, last_csv_date, missing_data_days)
 except ImportError:
     from growth_period import (annual_is_fresh, fy_end_month, growth_vs_year_ago, quarter_is_fresh,
                                quarter_label, short_fy, short_quarter, to_date)
     from settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
     from set_index_source import update_set_index_csv, update_set_index_volume
+    from price_freshness import build_payload, write_payload
     from trading_calendar import (MISSING_DATA_SHARE, SET_INDEX_FILE, drop_copy_rows, drop_dates,
-                                  holiday_dates, index_dates, missing_data_days)
+                                  holiday_dates, index_dates, last_csv_date, missing_data_days)
 
 warnings.filterwarnings("ignore")
 
@@ -40,8 +42,8 @@ warnings.filterwarnings("ignore")
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import (CHUNK_SIZE, DAILY_FILE, FULL_HISTORY_MIN_ROWS, FUND_WORKERS, HISTORY_DIR, RESULTS_DIR,
-                    PRICE_FALLBACK_MAX_STALE_BUSINESS_DAYS,
-                    PRICE_FALLBACK_WARN_PCT, SET_INDEX_FETCH_PERIOD,
+                    PRICE_FALLBACK_MAX_STALE_BUSINESS_DAYS, PRICE_FRESHNESS_FILE,
+                    PRICE_FALLBACK_WARN_PCT, PRICE_OUTAGE_BULK_FAILURES, SET_INDEX_FETCH_PERIOD,
                     SET_INDEX_YF_SYMBOL, SHORT_HISTORY_FILE, SHORT_HISTORY_MIN_ROWS,
                     SYMBOLS_FILE)
 from tools.scanner.utils import load_symbol_sources  # noqa: E402
@@ -509,6 +511,9 @@ def download_history_and_build_snapshot() -> None:
     df_symbols = pd.read_csv(SYMBOLS_FILE)
     tickers = df_symbols["Ticker"].tolist()
 
+    # ไม่มีไฟล์ = ขั้นราคาไม่จบรอบนี้ (ด่านก่อน push ไม่ปล่อย) — ห้ามให้ไฟล์ของรอบก่อนค้างมาหลอก
+    PRICE_FRESHNESS_FILE.unlink(missing_ok=True)
+
     print("📈 กำลังอัปเดต SET Index (TradingView หลัก / Yahoo สำรอง) ก่อนดาวน์โหลดหุ้น...")
     download_set_index()
 
@@ -566,7 +571,17 @@ def download_history_and_build_snapshot() -> None:
     fallback_tickers: List[str] = []
     dropped_tickers: List[str] = []
     still_failed: List[str] = []
-    if chunk_failed_all:
+    bulk_failed_count = len(chunk_failed_all)
+    # ดึงเป็นล็อตไม่ได้เกินเกณฑ์ = Yahoo น่าจะล่ม/บล็อก ไม่ใช่ตัวใดตัวหนึ่งพลาด → ไม่ดึงซ้ำทีละตัว (ตัวละ 4 วินาที+
+    # x หลายร้อยตัว = เป็นชั่วโมง และผลก็ไม่ต่างกัน) · ตัวที่เหลือไปทาง fallback ตามเดิม แล้วด่านก่อน push ตัดสิน
+    outage_suspected = bulk_failed_count > PRICE_OUTAGE_BULK_FAILURES
+    retry_skipped = False
+    if chunk_failed_all and outage_suspected:
+        retry_skipped = True
+        still_failed.extend(chunk_failed_all)
+        print(f"\n🚨 [Yahoo outage?] ดึงเป็นล็อตไม่ได้ {bulk_failed_count} ตัว (> {PRICE_OUTAGE_BULK_FAILURES}) — "
+              f"ข้ามการดึงซ้ำทีละตัว · ใช้ไฟล์ราคาเก่าแทนตามเดิม · บันทึก yahoo_outage_suspected")
+    elif chunk_failed_all:
         print(f"\n🔁 [Retry] {len(chunk_failed_all)} ticker(s) failed bulk download, retrying individually...")
         for ticker in chunk_failed_all:
             retry_df = retry_single_ticker_download(ticker)
@@ -644,6 +659,24 @@ def download_history_and_build_snapshot() -> None:
                 f"not isolated per-ticker flakiness.\n"
                 f"{'='*80}"
             )
+
+    # 🧊 [Freshness] สรุปความสดของราคารอบนี้ให้ด่านก่อน push + health_check H14 (tools/core/price_freshness.py)
+    index_last = last_csv_date(HISTORY_DIR / SET_INDEX_FILE)
+    data_days = [df.index[-1].date() for df in fresh.values() if len(df) and hasattr(df.index[-1], "date")]
+    payload = build_payload(
+        reference_date=str(index_last) if index_last else None,
+        stock_data_date=str(max(data_days)) if data_days else None,
+        universe_size=len(tickers),
+        fresh_count=success_count,
+        fallback_tickers=fallback_tickers,
+        dropped_tickers=dropped_tickers,
+        bulk_failed_count=bulk_failed_count,
+        outage_suspected=outage_suspected,
+        retry_skipped=retry_skipped,
+    )
+    write_payload(PRICE_FRESHNESS_FILE, payload)
+    print(f"   🧊 [Freshness] สด {success_count}/{len(tickers)} · ราคาเก่าแทน {len(fallback_tickers)} · "
+          f"ตัด {len(dropped_tickers)} · outage_suspected={outage_suspected} → {PRICE_FRESHNESS_FILE.name}")
 
     # 📊 Volume ของ SET_INDEX.csv = มูลค่าซื้อขายรวมของ universe — ต้องทำหลังไฟล์หุ้นเขียนครบแล้ว
     try:
