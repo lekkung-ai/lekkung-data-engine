@@ -37,12 +37,15 @@ RESULTS_DIR = DATA_DIR / "results"
 NEWS_DIR = DATA_DIR / "news"
 LOGS_DIR = DATA_DIR / "logs"
 MANUAL_DIR = DATA_DIR / "manual_input"
+META_DIR = DATA_DIR / "meta"  # สรุปต่อรอบที่ pipeline เขียนให้ด่าน/health check อ่าน (ไม่ commit)
 
 # 📄 กำหนดชื่อไฟล์ผลลัพธ์ (Result Files)
 SYMBOLS_FILE = RESULTS_DIR / "active_symbols.csv"
 # หุ้นประวัติสั้น (IPO) ที่ 2_download_history.py เก็บไฟล์ไว้แต่ไม่เข้า RS / scanner (ดู SHORT_HISTORY_* ด้านล่าง)
 SHORT_HISTORY_FILE = RESULTS_DIR / "short_history.json"
 DAILY_FILE = RESULTS_DIR / "daily_prices.csv"
+# สรุปความสดของราคารอบนี้ (2_download_history.py เขียน · scripts/price_freshness_gate.py + health_check H14 อ่าน)
+PRICE_FRESHNESS_FILE = META_DIR / "price_freshness.json"
 RS_FILE = RESULTS_DIR / "rs_ranking.csv"
 SEPA_FILE = RESULTS_DIR / "sepa_result.csv"
 COMBO_FILE = RESULTS_DIR / "sepa_stage2_combo.csv"
@@ -84,6 +87,9 @@ WEINSTEIN_SLOPE = 1.0
 # daily_prices.csv entirely, as long as that file isn't too stale.
 PRICE_FALLBACK_MAX_STALE_BUSINESS_DAYS = 5  # older than this -> drop (likely SP/delisted), not silently reused
 PRICE_FALLBACK_WARN_PCT = 0.10  # fallback rate above this fraction of the universe -> print a loud warning (systemic Yahoo issue, not per-ticker)
+# ดึงเป็นล็อต (yf.download) แล้วมีหุ้นที่ไม่ได้มากกว่านี้ = Yahoo น่าจะล่ม → ข้ามการดึงซ้ำทีละตัว (ถ้าล่มจริง 873 ตัว x
+# พัก 4 วินาที = 1 ชม.+) แล้วบันทึก yahoo_outage_suspected ใน PRICE_FRESHNESS_FILE · ปกติพลาด 5–7 ตัว/รอบ (ตัดประจำ)
+PRICE_OUTAGE_BULK_FAILURES = 50
 
 BASE_WINDOW = 150
 MAX_BASE_WIDTH = 45.0
