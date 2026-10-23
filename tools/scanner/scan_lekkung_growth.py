@@ -40,7 +40,7 @@ EARNINGS_FEED_CANDIDATES = [
 
 # คอลัมน์งวด/แหล่งของค่า growth จาก 2_download_history.apply_growth_freshness
 GROWTH_META_COLS = ["Growth_Quarter", "Growth_Quarter_End", "Growth_Source", "Rev_Growth_Period_End",
-                    "Profit_Growth_Period_End", "Growth_Stale"]
+                    "Profit_Growth_Period_End", "Growth_Stale", "Growth_Note"]
 
 
 def load_f45_netprofit_qoqy() -> dict:
@@ -123,6 +123,7 @@ def scan_lekkung_growth():
         df_financial_data.at[idx, "Growth_Quarter_End"] = period_end.isoformat()
         df_financial_data.at[idx, "Growth_Quarter"] = quarter_label(period_end)
         df_financial_data.at[idx, "growth_source"] = source
+        df_financial_data.at[idx, "Growth_Note"] = None
         drop_stale_note(idx, "NetProfit_Growth_QoQY")
 
     # 🔄 NetProfit_Growth_QoQY: ใช้ F45 ของเราเองก่อน (ตรงไตรมาสจริง ไม่มีปัญหา Yahoo
@@ -262,6 +263,9 @@ def scan_lekkung_growth():
             if pd.isna(val) and name not in stale_cols
         ]
         parts = ([f"missing: {', '.join(missing)}"] if missing else []) + ([f"stale: {', '.join(stale)}"] if stale else [])
+        # เหตุผลที่ QoQY คำนวณไม่ได้ (Growth_Note เช่น "ไตรมาสไม่พอ (4/5)") — ข้อความไทยตรง ๆ ต่อท้าย
+        if row.get("Growth_Note") and pd.isna(row.get("NetProfit_Growth_QoQY")):
+            parts.append(str(row["Growth_Note"]))
         incomplete_rows.append({"Ticker": row["Ticker"], "Reason": "; ".join(parts)})
 
     # ตัวที่ผ่านเทคนิคจาก HISTORY_DIR แต่หลุดจาก daily_prices.csv ไปเลย (เช่น ราคา fallback
