@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import sys
 import time
@@ -19,11 +20,15 @@ import pandas as pd
 import yfinance as yf
 
 try:
+    from tools.core.growth_period import (annual_is_fresh, fy_end_month, quarter_is_fresh, quarter_label,
+                                          short_fy, short_quarter, to_date)
     from tools.core.settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
     from tools.core.set_index_source import update_set_index_csv, update_set_index_volume
     from tools.core.trading_calendar import (MISSING_DATA_SHARE, SET_INDEX_FILE, drop_copy_rows, drop_dates,
                                              holiday_dates, index_dates, missing_data_days)
 except ImportError:
+    from growth_period import (annual_is_fresh, fy_end_month, quarter_is_fresh, quarter_label,
+                               short_fy, short_quarter, to_date)
     from settrade_helper import get_authenticated_session, fetch_settrade_fundamentals
     from set_index_source import update_set_index_csv, update_set_index_volume
     from trading_calendar import (MISSING_DATA_SHARE, SET_INDEX_FILE, drop_copy_rows, drop_dates,
@@ -84,6 +89,7 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
         ann_rev_growth = None
         ann_rev_ref_period = None
         ann_profit_growth = None
+        ann_profit_ref_period = None
         f = stock.financials
         if not f.empty:
             if "Total Revenue" in f.index and len(f.columns) >= 2:
@@ -96,6 +102,7 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
                 ni = f.loc["Net Income"].sort_index(ascending=False)
                 ann_profit_series = (ni.iloc[0] - ni.iloc[1]) / abs(ni.iloc[1])
                 ann_profit_growth = ann_profit_series
+                ann_profit_ref_period = ni.index[0]
 
         # --- ส่วนดึงข้อมูล Snapshot เดิม ---
         info = stock.info
@@ -105,10 +112,11 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
             "Revenue": info.get("totalRevenue"),
             "ROE": info.get("returnOnEquity"),
             "Revenue_Growth_YoY": ann_rev_growth,  # 👈 ใช้ค่า Annual ที่คำนวณเอง
-            "Revenue_Growth_YoY_ref": ann_rev_ref_period,  # 📦 metadata สำหรับ growth cache เท่านั้น
+            "Revenue_Growth_YoY_ref": ann_rev_ref_period,  # 📦 period end (growth cache + ตัวกันงบค้าง)
             "Profit_Growth_YoY": ann_profit_growth,  # 👈 ใช้ค่า Annual Net Income ที่คำนวณเอง (CANSLIM)
+            "Profit_Growth_YoY_ref": ann_profit_ref_period,  # 📦 period end (ตัวกันงบค้าง)
             "NetProfit_Growth_QoQY": qoqy_growth,  # 👈 ใช้ค่า QoQ ที่คำนวณเอง
-            "NetProfit_Growth_QoQY_ref": qoqy_ref_period,  # 📦 metadata สำหรับ growth cache เท่านั้น
+            "NetProfit_Growth_QoQY_ref": qoqy_ref_period,  # 📦 period end (growth cache + ตัวกันงบค้าง)
             "Market_Cap": info.get("marketCap"),
         }
     except Exception:
@@ -120,6 +128,7 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
             "Revenue_Growth_YoY": None,
             "Revenue_Growth_YoY_ref": None,
             "Profit_Growth_YoY": None,
+            "Profit_Growth_YoY_ref": None,
             "NetProfit_Growth_QoQY": None,
             "NetProfit_Growth_QoQY_ref": None,
             "Market_Cap": None,
@@ -164,49 +173,120 @@ def _is_fresh(fetched_date_str: Any) -> bool:
     return (date.today() - fetched).days <= GROWTH_CACHE_MAX_AGE_DAYS
 
 
-def apply_growth_cache_fallback(fundamental_data: Dict[str, Dict[str, Any]]) -> None:
-    """เติม Revenue_Growth_YoY / NetProfit_Growth_QoQY ที่เป็น None ในรอบนี้ ด้วยค่าจาก
+def _has_value(v: Any) -> bool:
+    """ตัวเลขจริง (ไม่ใช่ None / NaN / ±inf)"""
+    try:
+        return v is not None and math.isfinite(float(v))
+    except (TypeError, ValueError):
+        return False
+
+
+def apply_growth_cache_fallback(fundamental_data: Dict[str, Dict[str, Any]], today: Optional[date] = None) -> None:
+    """เติม Revenue_Growth_YoY / NetProfit_Growth_QoQY ที่ Yahoo รอบนี้ไม่มีค่า (หรือได้ไตรมาสค้าง) ด้วยค่าจาก
     cache ที่เคยดึงสำเร็จ (ถ้ายังไม่หมดอายุ) และอัปเดต cache ด้วยค่าที่ดึงสำเร็จรอบนี้
+    ค่าจาก cache ใช้ได้เฉพาะเมื่องวดของมันยังเป็นงวดล่าสุดที่ควรมี (growth_period) — cache ใน CI คือไฟล์ที่
+    commit ไว้ (data/cache ไม่อยู่ใน actions/cache) จึงอาจเป็นงวดเก่าหลายเดือน
+    ค่าค้างที่เหลือ → apply_growth_freshness ตัดสิน (แหล่งถัดไป / null + เหตุผล)
     ไม่แตะ field อื่น ไม่แตะ threshold/logic การกรองใดๆ — แก้แค่ที่มาของค่า growth
     """
     cache = _load_growth_cache()
-    today_str = date.today().isoformat()
+    today = today or date.today()
+    today_str = today.isoformat()
     recovered_from_cache = 0
+    refused_stale = 0
 
     for ticker, data in fundamental_data.items():
         entry = cache.get(ticker, {"Ticker": ticker})
-
-        # Revenue_Growth_YoY
-        if data.get("Revenue_Growth_YoY") is not None:
-            entry["Revenue_Growth_YoY"] = data["Revenue_Growth_YoY"]
-            ref = data.get("Revenue_Growth_YoY_ref")
-            entry["Revenue_Growth_YoY_ref_period"] = str(ref)[:10] if ref is not None else None
-            entry["Revenue_Growth_YoY_fetched_date"] = today_str
-        elif _is_fresh(entry.get("Revenue_Growth_YoY_fetched_date")):
-            data["Revenue_Growth_YoY"] = entry.get("Revenue_Growth_YoY")
-            recovered_from_cache += 1
-
-        # NetProfit_Growth_QoQY
-        if data.get("NetProfit_Growth_QoQY") is not None:
-            entry["NetProfit_Growth_QoQY"] = data["NetProfit_Growth_QoQY"]
-            ref = data.get("NetProfit_Growth_QoQY_ref")
-            entry["NetProfit_Growth_QoQY_ref_period"] = str(ref)[:10] if ref is not None else None
-            entry["NetProfit_Growth_QoQY_fetched_date"] = today_str
-        elif _is_fresh(entry.get("NetProfit_Growth_QoQY_fetched_date")):
-            data["NetProfit_Growth_QoQY"] = entry.get("NetProfit_Growth_QoQY")
+        fy = fy_end_month(data.get("Revenue_Growth_YoY_ref"), entry.get("Revenue_Growth_YoY_ref_period"))
+        period_ok = {
+            "Revenue_Growth_YoY": lambda p: annual_is_fresh(p, today),
+            "NetProfit_Growth_QoQY": lambda p: quarter_is_fresh(p, today, fy),
+        }
+        for col, is_period_fresh in period_ok.items():
+            ref = data.get(f"{col}_ref")
+            data[f"{col}_src"] = "yahoo"
+            if data.get(col) is not None:
+                entry[col] = data[col]
+                entry[f"{col}_ref_period"] = str(ref)[:10] if ref is not None else None
+                entry[f"{col}_fetched_date"] = today_str
+                if is_period_fresh(ref):
+                    continue
+            cached_ref = entry.get(f"{col}_ref_period")
+            if not (_is_fresh(entry.get(f"{col}_fetched_date")) and _has_value(entry.get(col))):
+                continue
+            if not is_period_fresh(cached_ref):
+                refused_stale += 1
+                if data.get(col) is not None:  # ค่าสดรอบนี้ (แม้ค้าง) ใหม่กว่า cache เสมอ
+                    continue
+            data[col] = entry.get(col)
+            data[f"{col}_ref"] = cached_ref
+            data[f"{col}_src"] = "cache"
             recovered_from_cache += 1
 
         cache[ticker] = entry
 
-        # metadata keys ใช้แค่ตอน merge เข้า cache ไม่ต้องส่งต่อไปยัง daily_snapshot
-        data.pop("Revenue_Growth_YoY_ref", None)
-        data.pop("NetProfit_Growth_QoQY_ref", None)
-
     _save_growth_cache(cache)
     print(
-        f"   📦 [Growth Cache] เติมค่าจาก cache ที่เคยดึงสำเร็จ {recovered_from_cache} field, "
+        f"   📦 [Growth Cache] เติมค่าจาก cache ที่เคยดึงสำเร็จ {recovered_from_cache} field "
+        f"(ในนั้นงวดค้าง {refused_stale} field → ตัวกันงบค้างตัดสินต่อ), "
         f"cache สะสมทั้งหมด {len(cache)} ticker"
     )
+
+
+# ⏳ ตัวกันงบค้าง: (คอลัมน์, index ใน tv_dict ของค่า, ของ period end, งบปี?, ตัวคูณ TradingView → หน่วยของคอลัมน์ ณ จุดนี้)
+# Revenue/Profit ยังเป็นอัตราส่วน (×100 ตอนสร้าง df_daily) · QoQY เป็น % แล้ว · TradingView ส่ง % มา
+GROWTH_FIELDS = (
+    ("NetProfit_Growth_QoQY", 5, 6, False, 1.0, "Growth_Quarter_End"),
+    ("Revenue_Growth_YoY", 7, 9, True, 0.01, "Rev_Growth_Period_End"),
+    ("Profit_Growth_YoY", 8, 9, True, 0.01, "Profit_Growth_Period_End"),
+)
+TV_GROWTH_COLUMNS = ["net_income_yoy_growth_fq", "fiscal_period_end_fq", "total_revenue_yoy_growth_fy",
+                     "net_income_yoy_growth_fy", "fiscal_period_end_fy"]
+
+
+def apply_growth_freshness(rows: List[Dict[str, Any]], tv_dict: Dict[str, list], today: date) -> None:
+    """ทุกค่า growth ต้องมาจากงวดล่าสุดที่ควรมีแล้ว (growth_period: เส้นตาย SET 45/60 วัน + ผ่อน 7 วัน)
+    Yahoo/cache งวดค้างหรือไม่มีค่า → TradingView scanner (มี period end ของตัวเอง) ถ้างวดนั้นสด →
+    ไม่มีแหล่งสด → null (ไม่เติมค่าเอง) + Growth_Stale = งวดที่ค้าง (scan_lekkung_growth ใส่กลุ่มงบไม่ครบ)
+    เขียนงวดที่ใช้ลงคอลัมน์ period end + Growth_Quarter ("2026Q2") + Growth_Source ของ QoQY"""
+    counts: Dict[str, int] = {}
+
+    def bump(k: str) -> None:
+        counts[k] = counts.get(k, 0) + 1
+
+    for row in rows:
+        tv = tv_dict.get(row["Ticker"]) or []
+
+        def tv_at(i: int) -> Any:
+            return tv[i] if len(tv) > i and tv[i] is not None else None
+
+        fy = fy_end_month(row.get("Revenue_Growth_YoY_ref"), tv_at(9))
+        stale_notes = []
+        for col, vi, pi, annual, scale, period_col in GROWTH_FIELDS:
+            def is_period_fresh(p: Any) -> bool:
+                return annual_is_fresh(p, today) if annual else quarter_is_fresh(p, today, fy)
+
+            value, ref = row.get(col), row.pop(f"{col}_ref", None)
+            src = row.pop(f"{col}_src", "yahoo")
+            if _has_value(value) and is_period_fresh(ref):
+                pass
+            elif _has_value(tv_at(vi)) and is_period_fresh(tv_at(pi)):
+                bump(f"{col}: {'stale' if _has_value(value) else 'missing'} → tv")
+                value, ref, src = float(tv_at(vi)) * scale, tv_at(pi), "tv"
+            else:
+                if _has_value(value):
+                    bump(f"{col}: stale → null")
+                    stale_notes.append(f"{col} {(short_fy if annual else short_quarter)(ref)}")
+                value, ref, src = None, None, None
+            row[col] = value
+            d = to_date(ref)
+            row[period_col] = d.isoformat() if d else None
+            if col == "NetProfit_Growth_QoQY":
+                row["Growth_Source"] = src
+        row["Growth_Quarter"] = quarter_label(row["Growth_Quarter_End"])
+        row["Growth_Stale"] = "; ".join(stale_notes) or None
+
+    print(f"   ⏳ [Growth งวดล่าสุด] ณ {today}: " + (", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "ทุกค่าเป็นงวดล่าสุดแล้ว"))
 
 
 def business_days_between(d1: date, d2: date) -> int:
@@ -580,7 +660,8 @@ def download_history_and_build_snapshot() -> None:
             "filter": [{"left": "name", "operation": "in_range", "right": valid_tickers}],
             "options": {"lang": "en"},
             "markets": ["thailand"],
-            "columns": ["name", "price_earnings_ttm", "earnings_per_share_basic_ttm", "return_on_equity", "market_cap_basic"],
+            "columns": ["name", "price_earnings_ttm", "earnings_per_share_basic_ttm", "return_on_equity", "market_cap_basic"]
+                       + TV_GROWTH_COLUMNS,  # index 5-9 → GROWTH_FIELDS
             "range": [0, len(valid_tickers)]
         }
         res = requests.post("https://scanner.tradingview.com/thailand/scan", json=tv_payload, timeout=15)
@@ -631,6 +712,8 @@ def download_history_and_build_snapshot() -> None:
             if len(tv) > 2 and tv[2] is not None: row["EPS"] = tv[2]
             if len(tv) > 3 and tv[3] is not None: row["ROE"] = tv[3] / 100.0
             if len(tv) > 4 and tv[4] is not None: row["Market_Cap"] = tv[4]
+
+    apply_growth_freshness(daily_snapshot, tv_dict, today)
 
     if daily_snapshot:
         df_daily = pd.DataFrame(daily_snapshot)
