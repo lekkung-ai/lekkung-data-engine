@@ -11,6 +11,8 @@ venv/
 data/history/
 # growth_cache.csv: เขียนทุกรอบ (2_download_history) · CI เก็บข้ามรอบด้วย actions/cache (daily-scan.yml)
 data/cache/
+# price_freshness.json: เขียนทุกรอบ (2_download_history) ให้ด่านก่อน push + health_check H14 อ่าน
+data/meta/
 data/news/
 data/logs/
 data/results/
