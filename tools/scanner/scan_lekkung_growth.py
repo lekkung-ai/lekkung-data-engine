@@ -17,8 +17,8 @@ import pandas as pd
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import DAILY_FILE, HISTORY_DIR, RESULTS_DIR
 from utils import iter_stock_files, load_fund_tickers, load_full_df
-from tools.core.growth_period import (annual_is_fresh, fy_end_month, parse_thai_date, quarter_is_fresh,
-                                      quarter_label, short_quarter, to_date)
+from tools.core.growth_period import (annual_is_fresh, fy_end_month, growth_vs_year_ago, parse_thai_date,
+                                      quarter_is_fresh, quarter_label, short_quarter, to_date)
 
 INCOMPLETE_FILE = RESULTS_DIR / "lekkung_incomplete.csv"
 
@@ -223,22 +223,21 @@ def scan_lekkung_growth():
                 info = stock.info
                 if pd.isna(row["Revenue_Growth_YoY"]):
                     f = stock.financials
-                    if not f.empty and "Total Revenue" in f.index and len(f.columns) >= 2:
-                        rev = f.loc["Total Revenue"].sort_index(ascending=False)
-                        rev_g = (rev.iloc[0] - rev.iloc[1]) / abs(rev.iloc[1]) * 100
-                        if annual_is_fresh(rev.index[0], today):  # งบปีค้าง → ไม่ใช้
-                            df_financial_data.at[idx, "Revenue_Growth_YoY"] = rev_g
-                            df_financial_data.at[idx, "Rev_Growth_Period_End"] = rev.index[0].date().isoformat()
+                    if not f.empty and "Total Revenue" in f.index:
+                        # ปีล่าสุดเทียบปีที่ห่าง 12 เดือนพอดี (ตามวันที่ ไม่ใช่ตำแหน่ง) · งบปีค้าง → ไม่ใช้
+                        rev_g, rev_end, _ = growth_vs_year_ago(f.loc["Total Revenue"])
+                        if rev_g is not None and annual_is_fresh(rev_end, today):
+                            df_financial_data.at[idx, "Revenue_Growth_YoY"] = rev_g * 100
+                            df_financial_data.at[idx, "Rev_Growth_Period_End"] = rev_end.isoformat()
                             drop_stale_note(idx, "Revenue_Growth_YoY")
                 
                 if pd.isna(row["NetProfit_Growth_QoQY"]):
                     qf = stock.quarterly_financials
-                    if not qf.empty and "Net Income" in qf.index and len(qf.columns) >= 5:
-                        net_income = qf.loc["Net Income"].sort_index()
-                        qoqy_series = ((net_income - net_income.shift(4)) / net_income.shift(4).abs() * 100)
-                        # ไตรมาสค้าง → ไม่ใช้ (ห้ามเอางวดเก่ามาคำนวณ growth)
-                        if not qoqy_series.empty and quarter_is_fresh(qoqy_series.index[-1], today, fy_of(idx)):
-                            set_quarter(idx, qoqy_series.iloc[-1], qoqy_series.index[-1].date(), "yahoo")
+                    if not qf.empty and "Net Income" in qf.index:
+                        # ไตรมาสล่าสุดเทียบไตรมาสที่ห่าง 12 เดือนพอดี (ตามวันที่) · ไตรมาสค้าง → ไม่ใช้
+                        q_g, q_end, _ = growth_vs_year_ago(qf.loc["Net Income"])
+                        if q_g is not None and quarter_is_fresh(q_end, today, fy_of(idx)):
+                            set_quarter(idx, q_g * 100, q_end, "yahoo")
             except Exception:
                 pass
             time.sleep(0.5)
