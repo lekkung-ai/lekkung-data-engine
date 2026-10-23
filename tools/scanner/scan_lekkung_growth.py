@@ -18,7 +18,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import DAILY_FILE, HISTORY_DIR, RESULTS_DIR
 from utils import iter_stock_files, load_fund_tickers, load_full_df
 from tools.core.growth_period import (annual_is_fresh, fy_end_month, parse_thai_date, quarter_is_fresh,
-                                      quarter_label, short_quarter)
+                                      quarter_label, short_quarter, to_date)
 
 INCOMPLETE_FILE = RESULTS_DIR / "lekkung_incomplete.csv"
 
@@ -135,13 +135,17 @@ def scan_lekkung_growth():
         used, skipped = 0, []
         for idx in df_financial_data.index[df_financial_data["Ticker"].isin(f45_netprofit.keys())]:
             yoy, period_end = f45_netprofit[df_financial_data.at[idx, "Ticker"]]
-            if quarter_is_fresh(period_end, today, fy_of(idx)):
+            # งวดใหม่ที่สุดชนะ: F45 ต้องไม่เก่ากว่างวดที่ daily_prices ใช้อยู่ (งวดเท่ากัน → F45 ตามลำดับเดิม)
+            current = to_date(df_financial_data.at[idx, "Growth_Quarter_End"])
+            if current is not None and period_end is not None and period_end < current:
+                skipped.append(f"{df_financial_data.at[idx, 'Ticker']}({short_quarter(period_end)}<{short_quarter(current)})")
+            elif quarter_is_fresh(period_end, today, fy_of(idx)):
                 set_quarter(idx, yoy, period_end, "f45")
                 used += 1
             else:
                 skipped.append(f"{df_financial_data.at[idx, 'Ticker']}({short_quarter(period_end)})")
         print(f"   📄 [F45] แทนที่ NetProfit_Growth_QoQY ด้วยข้อมูล F45 จริงสำหรับ {used} ตัว"
-              + (f" · ไม่ใช้ F45 งวดค้าง {len(skipped)} ตัว: {', '.join(skipped)}" if skipped else ""))
+              + (f" · ไม่ใช้ F45 (งวดค้าง / เก่ากว่างวดที่ใช้อยู่) {len(skipped)} ตัว: {', '.join(skipped)}" if skipped else ""))
 
     selected_tickers = []
     market_tech_metrics = {}
