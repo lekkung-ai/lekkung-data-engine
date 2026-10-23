@@ -65,14 +65,21 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
         # --- 💡 ส่วนคำนวณ QoQY ---
         qoqy_growth = None
         qoqy_ref_period = None
+        qoqy_note = None  # เหตุผลที่ QoQY คำนวณไม่ได้ → Growth_Note (ถ้าไม่มีแหล่งอื่นเติม)
         yf_t = f"{ticker}.BK"
         stock = yf.Ticker(yf_t)
 
         # 1. ดึงข้อมูลงบการเงินรายไตรมาส
         qf = stock.quarterly_financials
 
-        # 2. ตรวจสอบว่ามีข้อมูล 'Net Income' และมีข้อมูลพอ (อย่างน้อย 5 ไตรมาส)
-        if not qf.empty and "Net Income" in qf.index and len(qf.columns) >= 5:
+        # 2. ตรวจสอบว่ามีข้อมูล 'Net Income' และมีข้อมูลพอ (อย่างน้อย 5 ไตรมาส = ไตรมาสล่าสุด + ไตรมาสเดียวกันปีก่อน)
+        # ไม่พอ (IPO / Yahoo ส่งงบมาไม่ครบ) → QoQY = None + เหตุผล แต่ field อื่นยังคำนวณต่อ
+        # (เดิม qoqy_series ไม่ถูกสร้าง → NameError → except ทำให้ทุก field ของแถวเป็น None)
+        if qf.empty or "Net Income" not in qf.index:
+            qoqy_note = "ไม่มีงบรายไตรมาส"
+        elif len(qf.columns) < 5:
+            qoqy_note = f"ไตรมาสไม่พอ ({len(qf.columns)}/5)"
+        else:
             net_income = qf.loc["Net Income"].sort_index()
 
             # 3. คำนวณ QoQY ตามสูตร
@@ -80,8 +87,7 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
                 (net_income - net_income.shift(4)) / net_income.shift(4).abs() * 100
             )
 
-        # 4. ดึงค่าล่าสุดมาใช้งาน
-        if not qoqy_series.empty:
+            # 4. ดึงค่าล่าสุดมาใช้งาน
             qoqy_growth = qoqy_series.iloc[-1]
             qoqy_ref_period = qoqy_series.index[-1]
 
@@ -117,6 +123,7 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
             "Profit_Growth_YoY_ref": ann_profit_ref_period,  # 📦 period end (ตัวกันงบค้าง)
             "NetProfit_Growth_QoQY": qoqy_growth,  # 👈 ใช้ค่า QoQ ที่คำนวณเอง
             "NetProfit_Growth_QoQY_ref": qoqy_ref_period,  # 📦 period end (growth cache + ตัวกันงบค้าง)
+            "NetProfit_Growth_QoQY_note": qoqy_note,  # 📦 เหตุผลที่ไม่มีค่า (apply_growth_freshness → Growth_Note)
             "Market_Cap": info.get("marketCap"),
         }
     except Exception:
@@ -131,6 +138,7 @@ def fetch_fundamentals(ticker: str) -> Tuple[str, Dict[str, Any]]:
             "Profit_Growth_YoY_ref": None,
             "NetProfit_Growth_QoQY": None,
             "NetProfit_Growth_QoQY_ref": None,
+            "NetProfit_Growth_QoQY_note": None,
             "Market_Cap": None,
         }
 
@@ -184,8 +192,9 @@ def _has_value(v: Any) -> bool:
 def apply_growth_cache_fallback(fundamental_data: Dict[str, Dict[str, Any]], today: Optional[date] = None) -> None:
     """เติม Revenue_Growth_YoY / NetProfit_Growth_QoQY ที่ Yahoo รอบนี้ไม่มีค่า (หรือได้ไตรมาสค้าง) ด้วยค่าจาก
     cache ที่เคยดึงสำเร็จ (ถ้ายังไม่หมดอายุ) และอัปเดต cache ด้วยค่าที่ดึงสำเร็จรอบนี้
-    ค่าจาก cache ใช้ได้เฉพาะเมื่องวดของมันยังเป็นงวดล่าสุดที่ควรมี (growth_period) — cache ใน CI คือไฟล์ที่
-    commit ไว้ (data/cache ไม่อยู่ใน actions/cache) จึงอาจเป็นงวดเก่าหลายเดือน
+    ค่าจาก cache ใช้ได้เฉพาะเมื่องวดของมันยังเป็นงวดล่าสุดที่ควรมี (growth_period) — cache เก็บข้ามรอบ
+    (CI: daily-scan.yml "Restore/Save growth cache" · ไม่ commit ใน repo) จึงอาจเป็นงวดเก่าได้เสมอ
+    ไม่มีไฟล์ (รอบแรก / restore ไม่ได้) → cache ว่าง ทำงานต่อตามปกติ
     ค่าค้างที่เหลือ → apply_growth_freshness ตัดสิน (แหล่งถัดไป / null + เหตุผล)
     ไม่แตะ field อื่น ไม่แตะ threshold/logic การกรองใดๆ — แก้แค่ที่มาของค่า growth
     """
@@ -248,6 +257,7 @@ def apply_growth_freshness(rows: List[Dict[str, Any]], tv_dict: Dict[str, list],
     """ทุกค่า growth ต้องมาจากงวดล่าสุดที่ควรมีแล้ว (growth_period: เส้นตาย SET 45/60 วัน + ผ่อน 7 วัน)
     Yahoo/cache งวดค้างหรือไม่มีค่า → TradingView scanner (มี period end ของตัวเอง) ถ้างวดนั้นสด →
     ไม่มีแหล่งสด → null (ไม่เติมค่าเอง) + Growth_Stale = งวดที่ค้าง (scan_lekkung_growth ใส่กลุ่มงบไม่ครบ)
+    QoQY ที่คำนวณไม่ได้เลย (ไตรมาสไม่พอ / ไม่มีงบรายไตรมาส) และไม่มีแหล่งอื่นเติม → Growth_Note = เหตุผล
     เขียนงวดที่ใช้ลงคอลัมน์ period end + Growth_Quarter ("2026Q2") + Growth_Source ของ QoQY"""
     counts: Dict[str, int] = {}
 
@@ -262,6 +272,7 @@ def apply_growth_freshness(rows: List[Dict[str, Any]], tv_dict: Dict[str, list],
 
         fy = fy_end_month(row.get("Revenue_Growth_YoY_ref"), tv_at(9))
         stale_notes = []
+        qoqy_note = row.pop("NetProfit_Growth_QoQY_note", None)
         for col, vi, pi, annual, scale, period_col in GROWTH_FIELDS:
             def is_period_fresh(p: Any) -> bool:
                 return annual_is_fresh(p, today) if annual else quarter_is_fresh(p, today, fy)
@@ -285,6 +296,9 @@ def apply_growth_freshness(rows: List[Dict[str, Any]], tv_dict: Dict[str, list],
                 row["Growth_Source"] = src
         row["Growth_Quarter"] = quarter_label(row["Growth_Quarter_End"])
         row["Growth_Stale"] = "; ".join(stale_notes) or None
+        row["Growth_Note"] = qoqy_note if row["NetProfit_Growth_QoQY"] is None and qoqy_note else None
+        if row["Growth_Note"]:
+            bump(f"NetProfit_Growth_QoQY: {qoqy_note.split(' (')[0]} → null")
 
     print(f"   ⏳ [Growth งวดล่าสุด] ณ {today}: " + (", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "ทุกค่าเป็นงวดล่าสุดแล้ว"))
 
