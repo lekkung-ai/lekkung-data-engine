@@ -38,6 +38,11 @@ working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ข�
       public/data/history/<วัน>/ ที่มี biglot.json พอดี (วันล่าสุดใน index = โฟลเดอร์ล่าสุด; ค้าง/ขาด/เกิน → FAIL
       พร้อมรายชื่อวัน) · (WARN) โฟลเดอร์ Big Lot ล่าสุดเก่ากว่าวันอ้างอิงเกิน BIGLOT_MAX_BUSINESS_DAYS วันทำการ (นับจากแท่ง SET_INDEX.csv จึงไม่นับวันหยุดพิเศษ)
       (ต้นทาง RYT9 ไม่ออก / save_biglot.py ไม่ได้เซฟ — คนละเรื่องกับ index ค้าง)
+  H13 (WARN) งบค้างในผลสแกนที่ใช้ growth (GROWTH_SCANS: lekkung.json / oneil.json): ทุกแถวที่มีค่า
+      NetProfit_Growth_QoQY / Revenue_Growth_YoY / Profit_Growth_YoY ต้องมีงวด (Growth_Quarter_End /
+      Rev_Growth_Period_End / Profit_Growth_Period_End) ที่ยังเป็นงวดล่าสุดที่ควรมี ณ วันอ้างอิง
+      (tools/core/growth_period: เส้นตาย SET 45/60 วัน + ผ่อน 7 วัน) · งวดค้าง / ไม่มีงวด → WARN พร้อมรายชื่อ
+      (2_download_history ตัดค่างวดค้างเป็น null แล้ว จึงไม่ควรเกิด — เกิด = ตัวกันหลุดหรือไฟล์รุ่นเก่า)
 
 วันที่ตลาดไม่เปิด (--non-trading-day = run_all.py ข้ามทั้งรอบ "NON_TRADING_DAY"): ไม่มีอะไรถูก
 copy / push ในรอบนั้น → ข้อที่เทียบกับ "run นี้" (H3 generated_at ของ run นี้, H4 combined.json เทียบ
@@ -72,6 +77,8 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 from config import HISTORY_DIR, RESULTS_DIR  # noqa: E402
+from tools.core.growth_period import (annual_is_fresh, fy_end_month, quarter_is_fresh, short_fy,  # noqa: E402
+                                      short_quarter)
 from tools.core.trading_calendar import index_dates, last_csv_date, reference_date  # noqa: E402
 from tools.scanner.utils import NON_STOCK_FILES, is_fund_ticker  # noqa: E402
 
@@ -115,6 +122,11 @@ BIGLOT_FILE_RE = re.compile(r"^public/data/history/(\d{4}-\d{2}-\d{2})/biglot\.j
 BIGLOT_MAX_BUSINESS_DAYS = 2
 # H8 — JSON ของ scanner หุ้น (เลือกหุ้นเข้าซื้อ) ที่ต้องไม่มีกองทุน/REIT · scanner ด้าน stage
 # (market_stage / stage_all / weinstein) ยังมีกองทุนตามปกติ จึงไม่อยู่ในนี้
+# H13 — scan ที่คัดหุ้นด้วยค่า growth · (คอลัมน์ค่า, คอลัมน์งวด, งบปี?)
+GROWTH_SCANS = ("lekkung.json", "oneil.json")
+GROWTH_PERIOD_COLS = (("NetProfit_Growth_QoQY", "Growth_Quarter_End", False),
+                      ("Revenue_Growth_YoY", "Rev_Growth_Period_End", True),
+                      ("Profit_Growth_YoY", "Profit_Growth_Period_End", True))
 FUND_FREE_SCANS = ("sepa.json", "oliver_kell.json", "breakout.json", "ppbp.json", "lekkung.json", "oneil.json",
                    "lekkung_daytrade.json")
 
@@ -416,6 +428,38 @@ def check_h11(path: Path, ref: date) -> List[Result]:
              f"copy rows dropped this run={d.get('rows_dropped', '?')}")]
 
 
+def stale_growth_rows(recs: List[dict], ref: date) -> List[str]:
+    """แถวที่ใช้ค่า growth จากงวดค้าง / ไม่มีงวด → ["TFG NetProfit_Growth_QoQY Q1/26", ...]"""
+    out = []
+    for r in recs:
+        fy = fy_end_month(r.get("Rev_Growth_Period_End"))
+        for col, period_col, annual in GROWTH_PERIOD_COLS:
+            v = r.get(col)
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v):
+                continue
+            p = r.get(period_col)
+            fresh = annual_is_fresh(p, ref) if annual else quarter_is_fresh(p, ref, fy)
+            if not fresh:
+                out.append(f"{r.get('Ticker')} {col} {(short_fy if annual else short_quarter)(p) if p else 'no period'}")
+    return out
+
+
+def check_h13(git: Git, ref: date) -> List[Result]:
+    title = "growth scans use the latest due quarter (no stale financials)"
+    hits, missing, rows = [], [], 0
+    for name in GROWTH_SCANS:
+        raw = git.read(f"{SCANS}/{name}")
+        if raw is None:
+            missing.append(name)
+            continue
+        d = load_json(raw)[0]
+        recs = (d.get("data") or [] if isinstance(d, dict) else d or [])
+        rows += len(recs)
+        hits += [f"{name.removesuffix('.json')}: {h}" for h in stale_growth_rows(recs, ref)]
+    return [("H13", title, WARN if hits or missing else True,
+             f"stale ({len(hits)}): {hits or 'none'} · rows checked={rows} · not found={missing or 'none'}")]
+
+
 def check_h12(git: Git, history_dir: Path, ref: date) -> List[Result]:
     title = "history index.json = Big Lot folders (latest day + every day)"
     files = git.list_files("public/data/history/")
@@ -516,6 +560,7 @@ def main() -> int:
     if ref is not None:
         results += check_h11(args.missing_data_file, ref)
         results += check_h12(git, args.history_dir, ref)
+        results += check_h13(git, ref)
 
     print()
     w = max(len(r[1]) for r in results)
