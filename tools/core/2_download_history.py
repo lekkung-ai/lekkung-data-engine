@@ -214,20 +214,26 @@ def apply_growth_cache_fallback(fundamental_data: Dict[str, Dict[str, Any]], tod
         for col, is_period_fresh in period_ok.items():
             ref = data.get(f"{col}_ref")
             data[f"{col}_src"] = "yahoo"
-            if data.get(col) is not None:
+            # อ่าน cache ก่อนเขียนทับด้วยค่ารอบนี้
+            cached_val, cached_ref = entry.get(col), entry.get(f"{col}_ref_period")
+            cache_usable = _is_fresh(entry.get(f"{col}_fetched_date")) and _has_value(cached_val)
+            cache_ok = cache_usable and is_period_fresh(cached_ref)
+            live_ok = data.get(col) is not None and is_period_fresh(ref)
+            # งวดใหม่ที่สุดชนะ · งวดเท่ากัน → ค่ารอบนี้ (Yahoo) ก่อน cache
+            cache_newer = cache_ok and (not live_ok or to_date(cached_ref) > to_date(ref))
+            if data.get(col) is not None and not cache_newer:
                 entry[col] = data[col]
                 entry[f"{col}_ref_period"] = str(ref)[:10] if ref is not None else None
                 entry[f"{col}_fetched_date"] = today_str
-                if is_period_fresh(ref):
-                    continue
-            cached_ref = entry.get(f"{col}_ref_period")
-            if not (_is_fresh(entry.get(f"{col}_fetched_date")) and _has_value(entry.get(col))):
+            if live_ok and not cache_newer:
                 continue
-            if not is_period_fresh(cached_ref):
+            if not cache_usable:
+                continue
+            if not cache_ok:
                 refused_stale += 1
-                if data.get(col) is not None:  # ค่าสดรอบนี้ (แม้ค้าง) ใหม่กว่า cache เสมอ
+                if data.get(col) is not None:  # ค่ารอบนี้ (แม้ค้าง) ใหม่กว่า cache ที่ค้างเสมอ
                     continue
-            data[col] = entry.get(col)
+            data[col] = cached_val
             data[f"{col}_ref"] = cached_ref
             data[f"{col}_src"] = "cache"
             recovered_from_cache += 1
@@ -255,7 +261,8 @@ TV_GROWTH_COLUMNS = ["net_income_yoy_growth_fq", "fiscal_period_end_fq", "total_
 
 def apply_growth_freshness(rows: List[Dict[str, Any]], tv_dict: Dict[str, list], today: date) -> None:
     """ทุกค่า growth ต้องมาจากงวดล่าสุดที่ควรมีแล้ว (growth_period: เส้นตาย SET 45/60 วัน + ผ่อน 7 วัน)
-    Yahoo/cache งวดค้างหรือไม่มีค่า → TradingView scanner (มี period end ของตัวเอง) ถ้างวดนั้นสด →
+    แหล่งที่งวดยังสด (Yahoo/cache, TradingView scanner ซึ่งมี period end ของตัวเอง) → งวดใหม่ที่สุดชนะ
+    (งวดเท่ากัน → Yahoo/cache ก่อน)
     ไม่มีแหล่งสด → null (ไม่เติมค่าเอง) + Growth_Stale = งวดที่ค้าง (scan_lekkung_growth ใส่กลุ่มงบไม่ครบ)
     QoQY ที่คำนวณไม่ได้เลย (ไตรมาสไม่พอ / ไม่มีงบรายไตรมาส) และไม่มีแหล่งอื่นเติม → Growth_Note = เหตุผล
     เขียนงวดที่ใช้ลงคอลัมน์ period end + Growth_Quarter ("2026Q2") + Growth_Source ของ QoQY"""
@@ -279,11 +286,17 @@ def apply_growth_freshness(rows: List[Dict[str, Any]], tv_dict: Dict[str, list],
 
             value, ref = row.get(col), row.pop(f"{col}_ref", None)
             src = row.pop(f"{col}_src", "yahoo")
-            if _has_value(value) and is_period_fresh(ref):
-                pass
-            elif _has_value(tv_at(vi)) and is_period_fresh(tv_at(pi)):
-                bump(f"{col}: {'stale' if _has_value(value) else 'missing'} → tv")
-                value, ref, src = float(tv_at(vi)) * scale, tv_at(pi), "tv"
+            # ทุกแหล่งที่ผ่านตัวกันความใหม่ → งวดใหม่ที่สุดชนะ (ฤดูงบ: TradingView มีงวดใหม่ก่อน Yahoo/cache)
+            # งวดเท่ากัน → ลำดับเดิม Yahoo/cache ก่อน TradingView (max คืนตัวแรกเมื่อเท่ากัน)
+            primary_ok = _has_value(value) and is_period_fresh(ref)
+            candidates = [(value, ref, src)] if primary_ok else []
+            if _has_value(tv_at(vi)) and is_period_fresh(tv_at(pi)):
+                candidates.append((float(tv_at(vi)) * scale, tv_at(pi), "tv"))
+            if candidates:
+                best = max(candidates, key=lambda c: to_date(c[1]))
+                if best[2] == "tv":
+                    bump(f"{col}: {'older' if primary_ok else 'stale' if _has_value(value) else 'missing'} → tv")
+                value, ref, src = best
             else:
                 if _has_value(value):
                     bump(f"{col}: stale → null")
