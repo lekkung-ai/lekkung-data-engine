@@ -143,6 +143,19 @@ jobs:
           restore-keys: |
             history-${{ runner.os }}-
 
+      - name: Restore growth cache
+        # data/cache/growth_cache.csv = ค่า growth ที่ Yahoo เคยดึงสำเร็จ (2_download_history ใช้เติมตัวที่
+        # Yahoo ล้มรอบนี้ ~300+ ตัว/รอบ จาก rate limit) · ไม่ commit ใน repo (gitignore) → เก็บข้ามรอบด้วย
+        # cache แยก key จาก history (คนละ prefix → ไม่ชนกัน) · restore ล่าสุดตาม prefix · ไม่เจอ (รอบแรก /
+        # cache ถูกลบ) → ไม่มีไฟล์ → 2_download_history เริ่ม cache ว่าง ทำงานต่อตามปกติ · ค่าจาก cache
+        # ยังต้องผ่านตัวกันงบค้าง (growth_period) ก่อนใช้ทุกครั้ง
+        uses: actions/cache/restore@v5
+        with:
+          path: data/cache/growth_cache.csv
+          key: growth-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            growth-cache-${{ runner.os }}-
+
       - name: Checkout stockdesk earnings feed (for lekkung F45 growth source)
         # scan_lekkung_growth.py wants to read the most recently published
         # earnings_feed.json (F45 NetProfit YoY) to use as the primary source
@@ -224,6 +237,17 @@ jobs:
               weekday = date.fromisoformat(st["today"]).weekday() < 5 if st.get("today") else False
               print(f"::warning::{msg}" if weekday else f"::notice::{msg}")
           PY
+
+      - name: Save growth cache
+        # ทันทีหลัง run_all.py (step 2 เขียน cache แล้ว) และ always() — actions/cache แบบรวมจะ save ตอนจบ job
+        # เฉพาะ job เขียว (วันที่ health check แดง history ก็ไม่ถูก save) · วันหยุด (NON_TRADING_DAY) step 2
+        # ยังดึงงบ → save ด้วย · key ใส่ run_attempt กัน re-run ชน key เดิม · ไม่มีไฟล์ → ข้าม
+        if: always() && hashFiles('data/cache/growth_cache.csv') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: data/cache/growth_cache.csv
+          key: growth-cache-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Checkout stockdesk repository
         uses: actions/checkout@v6
