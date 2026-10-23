@@ -18,7 +18,7 @@ Unknown → December (most SET companies).
 """
 
 from datetime import date, timedelta
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 import pandas as pd
 
@@ -101,6 +101,26 @@ def expected_quarter_end(today: date, fy_month: int = DEFAULT_FY_END_MONTH) -> d
     while _due_date(q, fy_month) >= today:
         q = _add_months(q, -3)
     return q
+
+
+def growth_vs_year_ago(series: pd.Series, missing_note: str = "ไม่มีงวดเดียวกันปีก่อน"
+                        ) -> Tuple[Optional[float], Optional[date], Optional[str]]:
+    """งบงวดล่าสุด (คอลัมน์วันที่ล่าสุดของ Yahoo .quarterly_financials / .financials) เทียบงวดที่ period end อยู่
+    เดือนเดียวกันของปีก่อน (ห่าง 12 เดือนพอดี) — เทียบตามวันที่ ไม่นับตำแหน่ง: Yahoo มีไตรมาสขาดได้ (GPSC
+    ไม่มี 2025-09) แล้ว shift(4) จะไปเทียบไตรมาสที่ห่าง 15 เดือน · ไม่มีงวดนั้น / ค่าเป็น NaN → ไม่เดา ไม่เทียบงวดอื่น
+    → (None, งวดล่าสุด, missing_note)
+    คืน (อัตราส่วน (ล่าสุด − ปีก่อน) / |ปีก่อน|, period end ของงวดล่าสุด, เหตุผลเมื่อคำนวณไม่ได้)"""
+    s = series.copy()
+    s.index = pd.to_datetime(s.index)
+    s = s.sort_index()
+    if s.empty:
+        return None, None, "ไม่มีงบ"
+    last = s.index[-1]
+    base = [d for d in s.index if d.year == last.year - 1 and d.month == last.month]
+    if not base or pd.isna(s[base[-1]]):
+        return None, last.date(), missing_note
+    prior = s[base[-1]]
+    return float((s.iloc[-1] - prior) / abs(prior)), last.date(), None
 
 
 def quarter_label(period_end: Any) -> Optional[str]:
