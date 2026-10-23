@@ -113,6 +113,9 @@ jobs:
     needs: check-freshness
     if: needs.check-freshness.outputs.should_run == 'true'
     runs-on: ubuntu-24.04
+    # ปกติ 4–18 นาที · ถ้า Yahoo ล่มจริง ขั้นดึงข้อมูลเคยอาจค้างเป็นชั่วโมง (ตอนนี้ข้ามการดึงซ้ำเมื่อพลาดเกิน
+    # PRICE_OUTAGE_BULK_FAILURES แต่ขั้นงบการเงินยังช้าได้) → เพดาน 60 นาที ไม่ปล่อยให้ค้างจนชนรอบวันถัดไป
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
@@ -233,9 +236,11 @@ jobs:
           if skip:
               msg = (f"NON_TRADING_DAY {st.get('today')} - latest stock bar {st.get('reference_date')}, "
                      f"SET_INDEX {st.get('set_index_last')} - skipped scans/archive/push")
-              # วันธรรมดาที่ไม่มีแท่งเลย = วันหยุด หรือทั้งสองแหล่งค้าง → เตือนให้เห็นบนหน้า run
-              weekday = date.fromisoformat(st["today"]).weekday() < 5 if st.get("today") else False
-              print(f"::warning::{msg}" if weekday else f"::notice::{msg}")
+              # วันธรรมดาที่ไม่อยู่ในรายการวันหยุด SET = อาจเป็นแหล่งข้อมูลล่ม (Yahoo + TradingView พร้อมกัน
+              # ดูเหมือนตลาดปิด) → เตือนให้เห็นบนหน้า run · วันหยุดตามรายการ / เสาร์–อาทิตย์ = notice
+              from tools.core.set_holidays import non_trading_warning
+              warn = non_trading_warning(date.fromisoformat(st["today"])) if st.get("today") else None
+              print(f"::warning::{warn} | {msg}" if warn else f"::notice::{msg}")
           PY
 
       - name: Save growth cache
@@ -248,6 +253,16 @@ jobs:
         with:
           path: data/cache/growth_cache.csv
           key: growth-cache-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Price freshness gate (do not publish stale prices)
+        # ราคาหุ้นพึ่ง Yahoo แหล่งเดียว: ตัวที่ดึงไม่ได้ใช้ไฟล์ราคาเมื่อวานแทน แล้ว pipeline รันต่อ ติดเวลา
+        # "วันนี้" แล้ว push — ป้ายเตือนบนเว็บดูแค่เวลาสร้างไฟล์ จึงไม่เตือนอะไร (audit 2026-10-23)
+        # ด่านนี้อ่าน data/meta/price_freshness.json (2_download_history.py) → exit 1 เมื่อใช้ราคาเก่าแทน > 2%
+        # ของหุ้น หรือ Yahoo น่าจะล่ม หรือไม่มีไฟล์ → step copy / push ถัดไปถูกข้าม เว็บคงข้อมูลรอบก่อน
+        # (Record pipeline status ยังรัน และบันทึกว่าล้มที่ด่านนี้) · วันตลาดไม่เปิดข้าม step นี้ → ไม่ทำให้ job แดง
+        id: price_gate
+        if: steps.run_pipeline.outputs.non_trading != 'true'
+        run: python scripts/price_freshness_gate.py
 
       - name: Checkout stockdesk repository
         uses: actions/checkout@v6
@@ -521,6 +536,8 @@ jobs:
 
           if [ "${{ steps.run_pipeline.outcome }}" != "success" ]; then
             python scripts/write_pipeline_status.py --status failure --failed-step "Run Master Pipeline (all)" --source cloud --failed-steps $FAILED_STEPS
+          elif [ "${{ steps.price_gate.outcome }}" = "failure" ]; then
+            python scripts/write_pipeline_status.py --status failure --failed-step "Price freshness gate (ราคาค้าง - ไม่ push)" --source cloud --failed-steps $FAILED_STEPS
           elif [ "${{ steps.push_stockdesk.outcome }}" != "success" ]; then
             python scripts/write_pipeline_status.py --status failure --failed-step "Commit and Push to stockdesk" --source cloud --failed-steps $FAILED_STEPS
           else
