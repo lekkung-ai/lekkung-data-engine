@@ -2,7 +2,7 @@ pandas
 numpy
 requests
 beautifulsoup4
-yfinance
+yfinance==1.7.0
 playwright
 pymupdf
 feedparser
