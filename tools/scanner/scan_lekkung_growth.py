@@ -9,6 +9,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 import json
 import time
+from datetime import date
 import yfinance as yf
 import pandas as pd
 
@@ -16,6 +17,8 @@ import pandas as pd
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import DAILY_FILE, HISTORY_DIR, RESULTS_DIR
 from utils import iter_stock_files, load_fund_tickers, load_full_df
+from tools.core.growth_period import (annual_is_fresh, fy_end_month, parse_thai_date, quarter_is_fresh,
+                                      quarter_label, short_quarter)
 
 INCOMPLETE_FILE = RESULTS_DIR / "lekkung_incomplete.csv"
 
@@ -35,11 +38,16 @@ EARNINGS_FEED_CANDIDATES = [
 ]
 
 
+# คอลัมน์งวด/แหล่งของค่า growth จาก 2_download_history.apply_growth_freshness
+GROWTH_META_COLS = ["Growth_Quarter", "Growth_Quarter_End", "Growth_Source", "Rev_Growth_Period_End",
+                    "Profit_Growth_Period_End", "Growth_Stale"]
+
+
 def load_f45_netprofit_qoqy() -> dict:
-    """Ticker -> most-recent F45 netProfitYoY (already same-quarter-vs-last-year,
-    matching NetProfit_Growth_QoQY's own definition). Returns {} if
-    earnings_feed.json isn't reachable from either candidate location -
-    callers must fall back to Yahoo/cache in that case, not error."""
+    """Ticker -> (most-recent F45 netProfitYoY, period end date or None) (already
+    same-quarter-vs-last-year, matching NetProfit_Growth_QoQY's own definition).
+    Returns {} if earnings_feed.json isn't reachable from either candidate
+    location - callers must fall back to Yahoo/cache in that case, not error."""
     for path in EARNINGS_FEED_CANDIDATES:
         if not path.exists():
             continue
@@ -52,7 +60,7 @@ def load_f45_netprofit_qoqy() -> dict:
                 t = a.get("ticker")
                 yoy = a.get("netProfitYoY")
                 if t and t not in result and yoy is not None:
-                    result[t] = yoy
+                    result[t] = (yoy, parse_thai_date(a.get("periodEnd")))
             print(f"   📄 [F45] โหลด earnings_feed.json จาก {path} -> {len(result)} ticker มี NetProfit YoY")
             return result
         except Exception as e:
@@ -95,15 +103,44 @@ def scan_lekkung_growth():
         print(f"❌ [Lekkung Scan] ไม่สามารถอ่านไฟล์: {e}")
         return
 
+    # ⏳ งวดของค่า growth (2_download_history.apply_growth_freshness เขียนมา · daily_prices.csv รุ่นเก่าไม่มี)
+    today = date.today()
+    for col in GROWTH_META_COLS:
+        if col not in df_financial_data.columns:
+            df_financial_data[col] = None
+        df_financial_data[col] = df_financial_data[col].astype(object).where(df_financial_data[col].notna(), None)
+
+    def fy_of(idx) -> int:
+        return fy_end_month(df_financial_data.at[idx, "Rev_Growth_Period_End"])
+
+    def drop_stale_note(idx, col) -> None:
+        notes = [n for n in str(df_financial_data.at[idx, "Growth_Stale"] or "").split("; ") if n and not n.startswith(col)]
+        df_financial_data.at[idx, "Growth_Stale"] = "; ".join(notes) or None
+
+    def set_quarter(idx, value, period_end, source) -> None:
+        """ใส่ค่า QoQY ที่งวดสดแล้ว + งวด/แหล่ง · ลบป้ายงบค้างของ QoQY (ถ้ามี)"""
+        df_financial_data.at[idx, "NetProfit_Growth_QoQY"] = value
+        df_financial_data.at[idx, "Growth_Quarter_End"] = period_end.isoformat()
+        df_financial_data.at[idx, "Growth_Quarter"] = quarter_label(period_end)
+        df_financial_data.at[idx, "growth_source"] = source
+        drop_stale_note(idx, "NetProfit_Growth_QoQY")
+
     # 🔄 NetProfit_Growth_QoQY: ใช้ F45 ของเราเองก่อน (ตรงไตรมาสจริง ไม่มีปัญหา Yahoo
-    # คืนค่าว่างแบบสุ่ม) แล้วค่อย fallback Yahoo/cache เฉพาะตัวที่ยังไม่มี F45 ในระบบ
-    df_financial_data["growth_source"] = "yahoo"
+    # คืนค่าว่างแบบสุ่ม) แล้วค่อย fallback Yahoo/cache/TradingView เฉพาะตัวที่ยังไม่มี F45 ในระบบ
+    # F45 ก็ต้องเป็นงวดล่าสุดที่ควรมี (บริษัทที่ส่งงบช้าอาจเพิ่งประกาศงวดก่อน) — งวดค้าง → ไม่ใช้
+    df_financial_data["growth_source"] = df_financial_data["Growth_Source"].fillna("yahoo")
     f45_netprofit = load_f45_netprofit_qoqy()
     if f45_netprofit:
-        f45_mask = df_financial_data["Ticker"].isin(f45_netprofit.keys())
-        df_financial_data.loc[f45_mask, "NetProfit_Growth_QoQY"] = df_financial_data.loc[f45_mask, "Ticker"].map(f45_netprofit)
-        df_financial_data.loc[f45_mask, "growth_source"] = "f45"
-        print(f"   📄 [F45] แทนที่ NetProfit_Growth_QoQY ด้วยข้อมูล F45 จริงสำหรับ {f45_mask.sum()} ตัว")
+        used, skipped = 0, []
+        for idx in df_financial_data.index[df_financial_data["Ticker"].isin(f45_netprofit.keys())]:
+            yoy, period_end = f45_netprofit[df_financial_data.at[idx, "Ticker"]]
+            if quarter_is_fresh(period_end, today, fy_of(idx)):
+                set_quarter(idx, yoy, period_end, "f45")
+                used += 1
+            else:
+                skipped.append(f"{df_financial_data.at[idx, 'Ticker']}({short_quarter(period_end)})")
+        print(f"   📄 [F45] แทนที่ NetProfit_Growth_QoQY ด้วยข้อมูล F45 จริงสำหรับ {used} ตัว"
+              + (f" · ไม่ใช้ F45 งวดค้าง {len(skipped)} ตัว: {', '.join(skipped)}" if skipped else ""))
 
     selected_tickers = []
     market_tech_metrics = {}
@@ -184,15 +221,19 @@ def scan_lekkung_growth():
                     if not f.empty and "Total Revenue" in f.index and len(f.columns) >= 2:
                         rev = f.loc["Total Revenue"].sort_index(ascending=False)
                         rev_g = (rev.iloc[0] - rev.iloc[1]) / abs(rev.iloc[1]) * 100
-                        df_financial_data.at[idx, "Revenue_Growth_YoY"] = rev_g
+                        if annual_is_fresh(rev.index[0], today):  # งบปีค้าง → ไม่ใช้
+                            df_financial_data.at[idx, "Revenue_Growth_YoY"] = rev_g
+                            df_financial_data.at[idx, "Rev_Growth_Period_End"] = rev.index[0].date().isoformat()
+                            drop_stale_note(idx, "Revenue_Growth_YoY")
                 
                 if pd.isna(row["NetProfit_Growth_QoQY"]):
                     qf = stock.quarterly_financials
                     if not qf.empty and "Net Income" in qf.index and len(qf.columns) >= 5:
                         net_income = qf.loc["Net Income"].sort_index()
                         qoqy_series = ((net_income - net_income.shift(4)) / net_income.shift(4).abs() * 100)
-                        if not qoqy_series.empty:
-                            df_financial_data.at[idx, "NetProfit_Growth_QoQY"] = qoqy_series.iloc[-1]
+                        # ไตรมาสค้าง → ไม่ใช้ (ห้ามเอางวดเก่ามาคำนวณ growth)
+                        if not qoqy_series.empty and quarter_is_fresh(qoqy_series.index[-1], today, fy_of(idx)):
+                            set_quarter(idx, qoqy_series.iloc[-1], qoqy_series.index[-1].date(), "yahoo")
             except Exception:
                 pass
             time.sleep(0.5)
@@ -208,6 +249,9 @@ def scan_lekkung_growth():
         | df_financial_data["NetProfit_Growth_QoQY"].isna()
     )
     for _, row in df_financial_data[cond_tech & fundamentals_incomplete_mask].iterrows():
+        # งบค้าง (apply_growth_freshness ตัดเป็น null) แยกเป็นเหตุผลของตัวเอง: "stale: NetProfit_Growth_QoQY Q1/26"
+        stale = [n for n in str(row.get("Growth_Stale") or "").split("; ") if n and pd.isna(row.get(n.split(" ")[0]))]
+        stale_cols = {n.split(" ")[0] for n in stale}
         missing = [
             name for name, val in [
                 ("ROE", row.get("ROE")),
@@ -215,9 +259,10 @@ def scan_lekkung_growth():
                 ("Revenue_Growth_YoY", row.get("Revenue_Growth_YoY")),
                 ("NetProfit_Growth_QoQY", row.get("NetProfit_Growth_QoQY")),
             ]
-            if pd.isna(val)
+            if pd.isna(val) and name not in stale_cols
         ]
-        incomplete_rows.append({"Ticker": row["Ticker"], "Reason": f"missing: {', '.join(missing)}"})
+        parts = ([f"missing: {', '.join(missing)}"] if missing else []) + ([f"stale: {', '.join(stale)}"] if stale else [])
+        incomplete_rows.append({"Ticker": row["Ticker"], "Reason": "; ".join(parts)})
 
     # ตัวที่ผ่านเทคนิคจาก HISTORY_DIR แต่หลุดจาก daily_prices.csv ไปเลย (เช่น ราคา fallback
     # ก็ยังกู้คืนไม่ได้ - ไฟล์เก่าเกินไปหรือไม่มีไฟล์เลย)
@@ -261,7 +306,8 @@ def scan_lekkung_growth():
             f"   ► 6. ผ่าน Market Cap: {cond_mc.sum()} ตัว (เหลือรอด {condition.sum()} ตัว)"
         )
 
-    final_scan = df_financial_data[condition].copy()
+    # growth_source (รวม f45) แทน Growth_Source ของ daily_prices.csv ในผลสแกน
+    final_scan = df_financial_data[condition].drop(columns=["Growth_Source"]).copy()
 
     if not final_scan.empty and market_tech_metrics:
         final_scan["Close"] = final_scan["Ticker"].map(lambda t: market_tech_metrics.get(t, {}).get("Close"))
