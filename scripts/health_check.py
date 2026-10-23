@@ -44,6 +44,12 @@ working tree) + SET_INDEX.csv / ไฟล์หุ้นใน HISTORY_DIR ข�
       (tools/core/growth_period: เส้นตาย SET 45/60 วัน + ผ่อน 7 วัน) · งวดค้าง / ไม่มีงวด → WARN พร้อมรายชื่อ
       (2_download_history ตัดค่างวดค้างเป็น null แล้ว จึงไม่ควรเกิด — เกิด = ตัวกันหลุดหรือไฟล์รุ่นเก่า)
 
+  H14 ราคาหุ้นค้าง (Yahoo แหล่งเดียว · data/meta/price_freshness.json จาก 2_download_history · tools/core/price_freshness.py):
+      ตัวที่ดึงสดไม่ได้แล้วใช้ไฟล์ราคาเก่าแทน ≤ 1% ของหุ้น = PASS · 1–2% = WARN · > 2% หรือ yahoo_outage_suspected = FAIL
+      (ตัวที่ถูกตัดประจำไม่นับ) · ไม่มีไฟล์ = WARN (รอบแรกหลัง deploy) · วันตลาดไม่เปิด FAIL ลดเป็น WARN (ไม่มีอะไรถูก push)
+      · วัน NON_TRADING_DAY ตรงวันจันทร์–ศุกร์ที่ไม่อยู่ในรายการวันหยุด SET (tools/core/set_holidays.py) → WARN เพิ่ม 1 แถว
+      "อาจเป็นแหล่งข้อมูลล่ม ไม่ใช่วันหยุด" (run_all.py แยกไม่ออกเมื่อ Yahoo + TradingView ล่มพร้อมกัน)
+
 วันที่ตลาดไม่เปิด (--non-trading-day = run_all.py ข้ามทั้งรอบ "NON_TRADING_DAY"): ไม่มีอะไรถูก
 copy / push ในรอบนั้น → ข้อที่เทียบกับ "run นี้" (H3 generated_at ของ run นี้, H4 combined.json เทียบ
 commit ก่อนหน้า, H5/H6 JSON ที่ copy รอบนี้) และ H10 ถูกข้าม · H4: stockdesk_repo เป็น shallow checkout
@@ -76,7 +82,9 @@ if hasattr(sys.stdout, "reconfigure"):
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
-from config import HISTORY_DIR, RESULTS_DIR  # noqa: E402
+from config import HISTORY_DIR, PRICE_FRESHNESS_FILE, RESULTS_DIR  # noqa: E402
+from tools.core import price_freshness  # noqa: E402
+from tools.core.set_holidays import non_trading_warning  # noqa: E402
 from tools.core.growth_period import (annual_is_fresh, fy_end_month, quarter_is_fresh, short_fy,  # noqa: E402
                                       short_quarter)
 from tools.core.trading_calendar import index_dates, last_csv_date, reference_date  # noqa: E402
@@ -500,6 +508,29 @@ def check_h12(git: Git, history_dir: Path, ref: date) -> List[Result]:
     return out
 
 
+def check_h14(path: Path, non_trading_day: bool = False) -> List[Result]:
+    title = (f"price fallback (stale file reused) <= {price_freshness.FALLBACK_WARN_SHARE:.0%} of universe, "
+             "no Yahoo outage")
+    payload = price_freshness.read_payload(path)
+    if payload is None:
+        return [("H14", title, WARN, f"{path.name} not found - 2_download_history did not write it "
+                                     "(expected on the first run after deploy)")]
+    level, message = price_freshness.judge(payload)
+    if level == price_freshness.FAIL and non_trading_day:
+        # วันตลาดไม่เปิด: ไม่มีอะไรถูก copy / push → ไม่มีราคาเก่าขึ้นเว็บ · เตือนแต่ไม่ทำให้ job แดง
+        return [("H14", title, WARN, f"(non-trading day, nothing pushed) {message}")]
+    return [("H14", title, {price_freshness.OK: True, price_freshness.WARN: WARN, price_freshness.FAIL: False}[level],
+             message)]
+
+
+def check_h14_weekday_skip(today: date) -> List[Result]:
+    """NON_TRADING_DAY ในวันจันทร์–ศุกร์ที่ไม่ใช่วันหยุด SET ตามรายการ → WARN (อาจเป็นแหล่งข้อมูลล่ม)"""
+    msg = non_trading_warning(today)
+    if msg is None:
+        return []
+    return [("H14", "NON_TRADING_DAY on a weekday is a listed SET holiday", WARN, msg)]
+
+
 # ------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -514,6 +545,10 @@ def main() -> int:
                          "(missing/empty: fall back to mtime of run_all.py + WARNING)")
     ap.add_argument("--missing-data-file", type=Path, default=MISSING_DATA_JSON,
                     help="missing_data_days.json written by 2_download_history this run (H11)")
+    ap.add_argument("--price-freshness-file", type=Path, default=PRICE_FRESHNESS_FILE,
+                    help="price_freshness.json written by 2_download_history this run (H14)")
+    ap.add_argument("--today", type=date.fromisoformat, default=None,
+                    help="วันที่รันตามเวลา Bangkok (default: วันนี้) — ใช้กับการเตือน NON_TRADING_DAY วันธรรมดาที่ไม่ใช่วันหยุด")
     ap.add_argument("--non-trading-day", action="store_true",
                     help="run_all.py skipped this run (NON_TRADING_DAY): skip H3/H4/H5/H6, which check this run's output, and H10")
     args = ap.parse_args()
@@ -561,6 +596,9 @@ def main() -> int:
         results += check_h11(args.missing_data_file, ref)
         results += check_h12(git, args.history_dir, ref)
         results += check_h13(git, ref)
+    results += check_h14(args.price_freshness_file, args.non_trading_day)
+    if args.non_trading_day:
+        results += check_h14_weekday_skip(args.today or datetime.now(BANGKOK_TZ).date())
 
     print()
     w = max(len(r[1]) for r in results)
