@@ -46,12 +46,42 @@ def now_iso() -> str:
 # around each roll the two differ (seen 2026-10-15: up to ~13%, HO/RB about half of every month); outside
 # the roll windows the closes are identical. Approved 2026-10-16: use 1! as is, no cross-source % rule.
 # One source per series: the whole history, latest, % 1D and % 1M all come from whichever source answered.
+#
+# 2026-11-05: the same thing hit 16 more symbols. Since 2026-10-28 Yahoo returns nothing to the CI runner for
+# every Yahoo-sourced symbol (is_stale_fallback=true, latest 23–26 Oct → H10 red every weekday); the same
+# calls from a normal machine still work (checked 2026-11-05: all 17 answered, latest 5 Nov / 4 Nov) → CI IP
+# block, not a Yahoo outage. They now use TradingView continuous too: futures = the 1! contract of the same
+# exchange Yahoo's =F tracks (gold = COMEX:GC1! futures, not TVC:GOLD spot), FX / index / ETF = the plain
+# TradingView symbol. Yahoo stays the fallback, then last-good. Same shift rule (TV_SESSION_SHIFT) — checked
+# against Yahoo's closes: identical on the days both exist, except contract-roll days (ALI, ZS, HRC differ by
+# 1–5% for a few days).
+# NOT moved: CPO=F. TradingView only has MYX:FCPO1! in ringgit (4377 MYR) while Yahoo's CPO=F and the /macro
+# unit are USD/เมตริกตัน (1117) → needs a decision (see report). SICOM_RSS3 / SICOM_TSR20 (scanner SGX:RT1! /
+# SGX:TF1!): the 1! continuous sticks to the expired Nov contract (last bar 29 Oct, also over WebSocket) while
+# the live Dec contract (SGX:RTZ2026 / TFZ2026) has bars to 4–5 Nov → also left for a decision.
 TV_PRIMARY = {
     "BZ=F": "ICEEUR:BRN1!",
     "CL=F": "NYMEX:CL1!",
     "NG=F": "NYMEX:NG1!",
     "HO=F": "NYMEX:HO1!",
     "RB=F": "NYMEX:RB1!",
+    # 2026-11-05
+    "HRC=F": "COMEX:HRC1!",
+    "HG=F": "COMEX:HG1!",
+    "ALI=F": "COMEX:ALI1!",
+    "SB=F": "ICEUS:SB1!",
+    "ZC=F": "CBOT:ZC1!",
+    "ZS=F": "CBOT:ZS1!",
+    "ZM=F": "CBOT:ZM1!",
+    "ZW=F": "CBOT:ZW1!",
+    "ZL=F": "CBOT:ZL1!",
+    "HE=F": "CME:HE1!",
+    "KC=F": "ICEUS:KC1!",
+    "GC=F": "COMEX:GC1!",
+    "THB=X": "FX_IDC:USDTHB",
+    "DX-Y.NYB": "TVC:DXY",
+    "^TNX": "TVC:US10Y",
+    "BDRY": "AMEX:BDRY",
 }
 TV_WS_BARS = 300                 # > SERIES_DAYS + PCT_1M_TRADING_DAYS
 TV_WS_TIMEOUT_SEC = 30
