@@ -56,10 +56,14 @@ def now_iso() -> str:
 # against Yahoo's last 10 shared closes: the date mapping is right for all 16 and most closes agree to within
 # ~0.5% (many exactly); bigger gaps are contract-roll / month differences (ALI ~3% median, ZS ~1%, HRC -5% on
 # the last day).
-# NOT moved: CPO=F. TradingView only has MYX:FCPO1! in ringgit (4377 MYR) while Yahoo's CPO=F and the /macro
-# unit are USD/เมตริกตัน (1117) → needs a decision (see report). SICOM_RSS3 / SICOM_TSR20 (scanner SGX:RT1! /
-# SGX:TF1!): the 1! continuous sticks to the expired Nov contract (last bar 29 Oct, also over WebSocket) while
-# the live Dec contract (SGX:RTZ2026 / TFZ2026) has bars to 4–5 Nov → also left for a decision.
+# CPO=F (2026-11-05): TradingView only has MYX:FCPO1! in ringgit (4377 MYR vs Yahoo's 1117 USD, ratio = USD/MYR 4.04),
+# so CPO is TV-only and the /macro unit is MYR/เมตริกตัน (macro_mapping.py): NO Yahoo fallback (a USD point would
+# mix into the ringgit chart), a failed fetch keeps last-good only, and last-good / fresh data outside
+# VALID_CLOSE_RANGE (2,000–8,000 MYR) is rejected, so the old USD series can never come back. MYX stamps its
+# night session (21:00 MYT, 13:00Z) with the date of the evening, but it belongs to the NEXT trading day → CPO uses
+# a +12h shift (TV_SESSION_SHIFT_OVERRIDE): checked against Yahoo's daily moves, correlation 0.63 vs 0.15 with +6h.
+# SICOM_RSS3 / SICOM_TSR20: SGX's 1! continuous sticks to the expired contract (last bar 29 Oct) while the live
+# one (2!) trades → fetch_sicom_websocket reads 1! and 2! and keeps the one with the newer last bar (tie → 1!).
 TV_PRIMARY = {
     "BZ=F": "ICEEUR:BRN1!",
     "CL=F": "NYMEX:CL1!",
@@ -83,6 +87,7 @@ TV_PRIMARY = {
     "DX-Y.NYB": "TVC:DXY",
     "^TNX": "TVC:US10Y",
     "BDRY": "AMEX:BDRY",
+    "CPO=F": "MYX:FCPO1!",
 }
 TV_WS_BARS = 300                 # > SERIES_DAYS + PCT_1M_TRADING_DAYS
 TV_WS_TIMEOUT_SEC = 30
@@ -90,6 +95,17 @@ TV_WS_ATTEMPTS = 2
 # A TradingView daily bar is stamped at its session open: NYMEX 22:00Z the evening before, ICE 00:00Z
 # (22:00Z after a weekend). +6h moves every stamp onto the trading date Yahoo uses for the same close.
 TV_SESSION_SHIFT = timedelta(hours=6)
+# Symbols whose session stamp needs another shift than TV_SESSION_SHIFT
+TV_SESSION_SHIFT_OVERRIDE = {"CPO=F": timedelta(hours=12)}
+# TV_PRIMARY symbols that must NEVER fall back to Yahoo / tradingview_ta (different currency / unit)
+TV_ONLY = {"CPO=F"}
+# Sanity range of every close (fresh or last-good) — CPO is in MYR/ton; USD points (~1,100) fall outside
+VALID_CLOSE_RANGE = {"CPO=F": (2000.0, 8000.0)}
+# SICOM: read both the front (1!) and the next (2!) contract, keep the one with the newer last bar (tie → first)
+SICOM_CONTRACTS = {
+    "SICOM_RSS3": ["SGX:RT1!", "SGX:RT2!"],
+    "SICOM_TSR20": ["SGX:TF1!", "SGX:TF2!"],
+}
 # Guard: a day-on-day move beyond this is logged as a WARNING (the price is still used)
 TV_JUMP_WARN_PCT = 15.0
 
@@ -252,13 +268,39 @@ def fetch_yahoo(symbol: str, retries: int = 2) -> dict | None:
     return None
 
 
-def tv_session_date(ts: float) -> str:
-    return (datetime.fromtimestamp(ts, timezone.utc) + TV_SESSION_SHIFT).strftime("%Y-%m-%d")
+def tv_session_date(ts: float, shift: timedelta = TV_SESSION_SHIFT) -> str:
+    return (datetime.fromtimestamp(ts, timezone.utc) + shift).strftime("%Y-%m-%d")
 
 
-def fetch_tv_websocket(symbol: str) -> dict | None:
-    """TV_PRIMARY symbol → daily history from the TradingView WebSocket (set_index_source._tv_fetch_async)."""
-    tv_sym = TV_PRIMARY[symbol]
+def bars_to_points(bars: list, shift: timedelta, today: str) -> list[tuple[str, float]]:
+    """TV bars [[ts, o, h, l, c, ...]] → [(session date, close)] oldest first. Same session twice → the later bar
+    wins; a session dated after `today` (Bangkok) is an unfinished night session → dropped."""
+    by_date: dict[str, float] = {}
+    for v in bars:
+        if v[4] is not None and float(v[4]) > 0:
+            by_date[tv_session_date(v[0], shift)] = float(v[4])
+    return sorted((d, c) for d, c in by_date.items() if d <= today)
+
+
+def in_valid_range(symbol: str, close: float) -> bool:
+    rng = VALID_CLOSE_RANGE.get(symbol)
+    return rng is None or rng[0] <= close <= rng[1]
+
+
+def data_in_valid_range(symbol: str, data: dict) -> bool:
+    """latest close and every series point inside VALID_CLOSE_RANGE (always True for symbols without a range)."""
+    if symbol not in VALID_CLOSE_RANGE:
+        return True
+    closes = [(data.get("latest") or {}).get("close")] + [p.get("close") for p in data.get("series") or []]
+    return all(c is not None and in_valid_range(symbol, float(c)) for c in closes)
+
+
+def fetch_tv_websocket(symbol: str, tv_sym: str | None = None) -> dict | None:
+    """symbol → daily history from the TradingView WebSocket (set_index_source._tv_fetch_async).
+    tv_sym defaults to TV_PRIMARY[symbol]; SICOM passes its 1! / 2! contract."""
+    tv_sym = tv_sym or TV_PRIMARY[symbol]
+    shift = TV_SESSION_SHIFT_OVERRIDE.get(symbol, TV_SESSION_SHIFT)
+    today = datetime.now(BKK_TZ).strftime("%Y-%m-%d")
     for attempt in range(1, TV_WS_ATTEMPTS + 1):
         try:
             rows = asyncio.run(asyncio.wait_for(_tv_fetch_async(tv_sym, TV_WS_BARS), timeout=TV_WS_TIMEOUT_SEC))
@@ -270,15 +312,19 @@ def fetch_tv_websocket(symbol: str) -> dict | None:
                 print(f"     ⚠️ TradingView {tv_sym}: newest bar has no price ({bars[-1][4]!r}) → fallback")
                 return None
             else:
-                by_date: dict[str, float] = {}
-                for v in bars:
-                    if v[4] is not None and float(v[4]) > 0:
-                        by_date[tv_session_date(v[0])] = float(v[4])  # same session twice → keep the later bar
-                data = build_result(sorted(by_date.items()))
-                if data and data["pct_1d"] is not None and abs(data["pct_1d"]) > TV_JUMP_WARN_PCT:
-                    print(f"     ⚠️ WARNING TradingView {tv_sym}: day-on-day change {data['pct_1d']:+.2f}% "
-                          f"(> ±{TV_JUMP_WARN_PCT:.0f}%) — still used, check the contract roll")
-                return data
+                data = build_result(bars_to_points(bars, shift, today))
+                if data is None:
+                    print(f"     ⚠️ TradingView {tv_sym}: no usable bar up to {today} (attempt {attempt}/{TV_WS_ATTEMPTS})")
+                elif not data_in_valid_range(symbol, data):
+                    lo, hi = VALID_CLOSE_RANGE[symbol]
+                    print(f"     ❌ TradingView {tv_sym}: close outside {lo:,.0f}–{hi:,.0f} "
+                          f"(latest {data['latest']['close']}) — wrong unit? → rejected")
+                    return None
+                else:
+                    if data["pct_1d"] is not None and abs(data["pct_1d"]) > TV_JUMP_WARN_PCT:
+                        print(f"     ⚠️ WARNING TradingView {tv_sym}: day-on-day change {data['pct_1d']:+.2f}% "
+                              f"(> ±{TV_JUMP_WARN_PCT:.0f}%) — still used, check the contract roll")
+                    return data
         except Exception as e:
             print(f"     ⚠️ TradingView {tv_sym}: {type(e).__name__}: {e} (attempt {attempt}/{TV_WS_ATTEMPTS})")
         if attempt < TV_WS_ATTEMPTS:
@@ -286,8 +332,40 @@ def fetch_tv_websocket(symbol: str) -> dict | None:
     return None
 
 
+def pick_fresher_contract(candidates: list[tuple[str, dict | None]]) -> tuple[str, dict] | None:
+    """[(tv symbol, data|None), …] in preference order → the one whose latest bar date is newest.
+    Same date → the earlier one in the list (1!). None when every contract failed."""
+    best: tuple[str, dict] | None = None
+    for tv_sym, data in candidates:
+        if not data:
+            continue
+        if best is None or data["latest"]["date"] > best[1]["latest"]["date"]:
+            best = (tv_sym, data)
+    return best
+
+
+def fetch_sicom_websocket(symbol: str) -> tuple[dict | None, str | None]:
+    """SICOM: read the front (1!) and next (2!) contract, whole series from the one with the newer last bar."""
+    contracts = SICOM_CONTRACTS[symbol]
+    picked = pick_fresher_contract([(c, fetch_tv_websocket(symbol, c)) for c in contracts])
+    if picked is None:
+        return None, None
+    tv_sym, data = picked
+    if tv_sym != contracts[0]:
+        print(f"     🔀 {symbol}: {contracts[0]} has no newer bar than {tv_sym} "
+              f"(latest {data['latest']['date']}) → using {tv_sym} (whole series from that contract)")
+    return data, tv_sym
+
+
 def fetch_symbol(symbol: str) -> tuple[dict | None, str | None, str | None]:
     """(data, source, source_symbol) — logged every run and written into the JSON."""
+    # SICOM: WebSocket 1! / 2! first (the scanner's 1! sticks to the expired contract), scanner as the old way
+    if symbol in SICOM_CONTRACTS:
+        data, tv_sym = fetch_sicom_websocket(symbol)
+        if data is not None:
+            return data, SRC_TV_WS, tv_sym
+        print(f"     ↪️ SICOM WebSocket failed for {symbol} → TradingView scanner {DIRECT_TV_MAPPING[symbol]}")
+
     # Direct TV mapping symbols bypass yfinance
     if symbol in DIRECT_TV_MAPPING:
         return fetch_direct_tradingview(symbol), SRC_TV_SCANNER, DIRECT_TV_MAPPING[symbol]
@@ -296,6 +374,9 @@ def fetch_symbol(symbol: str) -> tuple[dict | None, str | None, str | None]:
         data = fetch_tv_websocket(symbol)
         if data is not None:
             return data, SRC_TV_WS, TV_PRIMARY[symbol]
+        if symbol in TV_ONLY:
+            print(f"     ⛔ TradingView {TV_PRIMARY[symbol]} failed → no Yahoo fallback for {symbol} (other currency) → last-good only")
+            return None, None, None
         print(f"     ↪️ TradingView {TV_PRIMARY[symbol]} failed → Yahoo {symbol} (whole history from Yahoo)")
 
     # Yahoo (primary for everything else, fallback for TV_PRIMARY — always the full Yahoo history)
@@ -352,6 +433,10 @@ def main():
                 for sym, item in prev.get("commodities", {}).items():
                     prev_close = item.get("latest", {}).get("close")
                     prev_series = item.get("series", [])
+                    if not data_in_valid_range(sym, item):
+                        # e.g. CPO=F in USD from before it moved to ringgit — never reuse it as last-good
+                        print(f"  ⛔ last-good {sym} from {p.name} is outside the valid close range → ignored")
+                        continue
                     # Only accept previous item if it has a valid positive close price or non-empty series
                     if (prev_close is not None and prev_close > 0) or len(prev_series) > 0:
                         if sym not in existing_commodities:

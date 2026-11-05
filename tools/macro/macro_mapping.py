@@ -223,7 +223,7 @@ COMMODITIES = {
     "CPO=F": {
         "name_th": "น้ำมันปาล์มดิบ (มาเลเซีย)",
         "name_en": "Malaysian Crude Palm Oil",
-        "unit": "USD/เมตริกตัน",
+        "unit": "MYR/เมตริกตัน",  # MYX:FCPO1! is quoted in ringgit (was USD while it came from Yahoo CPO=F)
         "zone": "agri",
         "tickers": ["UVAN", "UPOIC", "VPO"],
         "ticker_impacts": {
