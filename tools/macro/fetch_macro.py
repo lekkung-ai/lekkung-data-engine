@@ -53,8 +53,9 @@ def now_iso() -> str:
 # block, not a Yahoo outage. They now use TradingView continuous too: futures = the 1! contract of the same
 # exchange Yahoo's =F tracks (gold = COMEX:GC1! futures, not TVC:GOLD spot), FX / index / ETF = the plain
 # TradingView symbol. Yahoo stays the fallback, then last-good. Same shift rule (TV_SESSION_SHIFT) — checked
-# against Yahoo's closes: identical on the days both exist, except contract-roll days (ALI, ZS, HRC differ by
-# 1–5% for a few days).
+# against Yahoo's last 10 shared closes: the date mapping is right for all 16 and most closes agree to within
+# ~0.5% (many exactly); bigger gaps are contract-roll / month differences (ALI ~3% median, ZS ~1%, HRC -5% on
+# the last day).
 # NOT moved: CPO=F. TradingView only has MYX:FCPO1! in ringgit (4377 MYR) while Yahoo's CPO=F and the /macro
 # unit are USD/เมตริกตัน (1117) → needs a decision (see report). SICOM_RSS3 / SICOM_TSR20 (scanner SGX:RT1! /
 # SGX:TF1!): the 1! continuous sticks to the expired Nov contract (last bar 29 Oct, also over WebSocket) while
