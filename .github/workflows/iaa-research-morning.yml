@@ -18,6 +18,12 @@ on:
     - cron: '45 2 * * 1-5' # 09:45 ICT (UTC+7) Mon-Fri
   workflow_dispatch:
 
+# One stockdesk writer at a time (shared with daily-scan.yml run-pipeline and
+# earnings-evening.yml) - waits, never cancels.
+concurrency:
+  group: stockdesk-writers
+  cancel-in-progress: false
+
 jobs:
   fetch-iaa:
     runs-on: ubuntu-24.04

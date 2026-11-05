@@ -1,0 +1,113 @@
+name: Earnings Evening Update
+
+# 20:00 ICT on SET trading days: a light, earnings-only pass so filings that land
+# after the ~18:00 daily-scan run (peak season: many companies file 18:00-20:00)
+# show on /earnings the same evening instead of the next morning.
+#
+# Same steps and push as the earnings part of iaa-research-morning.yml /
+# daily-scan.yml (fetch_earnings -> extract_reason -> enrich_earnings_pead ->
+# safe_push of the two earnings files only). Nothing else of the pipeline runs.
+#
+# Light on SET: --history-budget 40 (normal runs: 150). Current-quarter F45s are
+# never limited, so every new filing is in; only the older F45s behind the
+# 5-quarter bars / last-quarter column are capped. 40 pages = the history of the
+# ~8-10 newest filings, ~20 s of paced requests, far below the ~150-page burst
+# after which SET starts answering with blank pages - and the 18:00 run already
+# used up to 150 two hours earlier. Whatever is left is fetched at 09:45.
+#
+# Holidays: skipped on SET holidays with tools/core/set_holidays.py (the same
+# list daily-scan uses for its warning) - no input to force a holiday run.
+#
+# workflow_dispatch: so cron-job.org can call it too if GitHub's schedule runs
+# late (see docs/external-trigger.md). GitHub schedules only fire from the
+# default branch, and can start 10-60 min late.
+
+on:
+  schedule:
+    - cron: '0 13 * * 1-5' # 20:00 ICT (UTC+7) Mon-Fri
+  workflow_dispatch:
+
+# Shared with every job here that pushes to stockdesk (daily-scan run-pipeline,
+# iaa-research-morning). cancel-in-progress: false = if daily-scan is still
+# running at 20:00 this run WAITS for it, it is not cancelled. GitHub keeps at
+# most one waiting run per group: a third run queued while one is waiting
+# replaces the waiting one (only happens with overlapping manual dispatches).
+concurrency:
+  group: stockdesk-writers
+  cancel-in-progress: false
+
+jobs:
+  earnings-evening:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read # the push to stockdesk uses DASHBOARD_PAT
+    steps:
+      - name: Checkout data_engine repository (SET holiday list)
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Skip SET holidays
+        id: holiday
+        run: |
+          python - <<'PYEOF'
+          import os
+          from datetime import datetime, timedelta, timezone
+          from tools.core.set_holidays import has_calendar, is_set_holiday
+
+          today = datetime.now(timezone(timedelta(hours=7))).date()
+          skip = today.weekday() >= 5 or is_set_holiday(today)
+          if not has_calendar(today.year):
+              print(f"::warning::no SET holiday list for {today.year} in tools/core/set_holidays.py - running on every weekday")
+          print(f"{today}: {'SET holiday / weekend - skipping' if skip else 'SET trading day - running'}")
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"skip={'true' if skip else 'false'}\n")
+          PYEOF
+
+      - name: Install PyMuPDF (extract_reason.py; the rest is stdlib)
+        if: steps.holiday.outputs.skip != 'true'
+        run: pip install pymupdf
+
+      - name: Checkout stockdesk repository
+        if: steps.holiday.outputs.skip != 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: lekkung-ai/lekkung-stockdesk
+          token: ${{ secrets.DASHBOARD_PAT }}
+          path: stockdesk_repo
+
+      - name: Fetch earnings feed (F45 / MD&A / งบการเงิน)
+        # Not continue-on-error: if this fails there is nothing new to push and
+        # the run should show red.
+        if: steps.holiday.outputs.skip != 'true'
+        run: |
+          cd stockdesk_repo
+          python -X utf8 scripts/fetch_earnings.py --history-budget 40
+
+      - name: Extract earnings reasons (rule-based, no AI)
+        # fetch_earnings.py regenerates earnings_feed.json - same as the other runs,
+        # this step must follow it.
+        if: steps.holiday.outputs.skip != 'true'
+        continue-on-error: true
+        run: |
+          cd stockdesk_repo
+          python -X utf8 scripts/extract_reason.py
+
+      - name: Enrich earnings with PEAD (gap & drift)
+        if: steps.holiday.outputs.skip != 'true'
+        continue-on-error: true
+        run: |
+          cd stockdesk_repo
+          python -X utf8 scripts/enrich_earnings_pead.py
+
+      - name: Commit and push earnings feed only
+        if: steps.holiday.outputs.skip != 'true'
+        run: |
+          cd stockdesk_repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python scripts/safe_push.py --repo . --message "Evening earnings feed update" --add public/data/earnings/earnings_feed.json public/data/earnings/reason_cache.json
