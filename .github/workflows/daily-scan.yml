@@ -113,13 +113,6 @@ jobs:
     needs: check-freshness
     if: needs.check-freshness.outputs.should_run == 'true'
     runs-on: ubuntu-24.04
-    # One stockdesk writer at a time (shared with iaa-research-morning.yml and
-    # earnings-evening.yml): a run that finds another one pushing WAITS, it is
-    # never cancelled (cancel-in-progress: false). Job level, so check-freshness
-    # still runs at once and a skipped day never queues anything.
-    concurrency:
-      group: stockdesk-writers
-      cancel-in-progress: false
     # ปกติ 4–18 นาที · ถ้า Yahoo ล่มจริง ขั้นดึงข้อมูลเคยอาจค้างเป็นชั่วโมง (ตอนนี้ข้ามการดึงซ้ำเมื่อพลาดเกิน
     # PRICE_OUTAGE_BULK_FAILURES แต่ขั้นงบการเงินยังช้าได้) → เพดาน 60 นาที ไม่ปล่อยให้ค้างจนชนรอบวันถัดไป
     timeout-minutes: 60

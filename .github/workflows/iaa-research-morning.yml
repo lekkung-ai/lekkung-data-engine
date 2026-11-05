@@ -18,8 +18,9 @@ on:
     - cron: '45 2 * * 1-5' # 09:45 ICT (UTC+7) Mon-Fri
   workflow_dispatch:
 
-# One stockdesk writer at a time (shared with daily-scan.yml run-pipeline and
-# earnings-evening.yml) - waits, never cancels.
+# One earnings writer at a time (shared with earnings-evening.yml) - a run that
+# finds the other one pushing waits, it is never cancelled.
+# (daily-scan.yml is deliberately not in this group.)
 concurrency:
   group: stockdesk-writers
   cancel-in-progress: false
@@ -61,6 +62,13 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           python scripts/safe_push.py --repo . --message "Morning IAA research update" --add data/scans/research_iaa.json
 
+      - name: Install PyMuPDF for extract_reason.py
+        # Was missing, so extract_reason.py failed on `import fitz` every morning
+        # (hidden by continue-on-error). Pinned to what daily-scan.yml gets from
+        # requirements.txt today (unpinned "pymupdf" -> 2.1 on 2026-11-05).
+        continue-on-error: true
+        run: pip install pymupdf==2.1
+
       - name: Fetch earnings feed (F45 / MD&A / งบการเงิน)
         # Second (and only other) script this morning run does - no
         # Playwright/browser needed, just JSON API calls, so no extra deps
@@ -88,9 +96,11 @@ jobs:
           python -X utf8 scripts/enrich_earnings_pead.py
 
       - name: Commit and push earnings feed
-        continue-on-error: true
+        # safe_push: fetch + rebase onto the new main + push, up to 3 tries, never
+        # --force. Not continue-on-error: if it still can't push, the job goes red
+        # (the IAA push above has already landed by then).
         run: |
           cd stockdesk_repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          python scripts/safe_push.py --repo . --message "Morning earnings feed update" --add public/data/earnings/earnings_feed.json public/data/earnings/reason_cache.json
+          python scripts/safe_push.py --repo . --max-retries 3 --message "Morning earnings feed update" --add public/data/earnings/earnings_feed.json public/data/earnings/reason_cache.json

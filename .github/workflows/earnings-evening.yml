@@ -27,11 +27,12 @@ on:
     - cron: '0 13 * * 1-5' # 20:00 ICT (UTC+7) Mon-Fri
   workflow_dispatch:
 
-# Shared with every job here that pushes to stockdesk (daily-scan run-pipeline,
-# iaa-research-morning). cancel-in-progress: false = if daily-scan is still
-# running at 20:00 this run WAITS for it, it is not cancelled. GitHub keeps at
-# most one waiting run per group: a third run queued while one is waiting
-# replaces the waiting one (only happens with overlapping manual dispatches).
+# Shared with iaa-research-morning.yml (the other earnings writer); daily-scan.yml
+# is deliberately not in it. cancel-in-progress: false = a run that finds the other
+# one pushing waits, it is not cancelled. A collision with daily-scan's own push
+# is handled by safe_push (rebase onto the new main + retry). GitHub keeps at most
+# one waiting run per group: a third run queued while one waits replaces it (only
+# with overlapping manual dispatches).
 concurrency:
   group: stockdesk-writers
   cancel-in-progress: false
@@ -69,8 +70,10 @@ jobs:
           PYEOF
 
       - name: Install PyMuPDF (extract_reason.py; the rest is stdlib)
+        # Pinned to what daily-scan.yml gets from requirements.txt today
+        # (unpinned "pymupdf" -> 2.1 on 2026-11-05).
         if: steps.holiday.outputs.skip != 'true'
-        run: pip install pymupdf
+        run: pip install pymupdf==2.1
 
       - name: Checkout stockdesk repository
         if: steps.holiday.outputs.skip != 'true'
@@ -105,9 +108,11 @@ jobs:
           python -X utf8 scripts/enrich_earnings_pead.py
 
       - name: Commit and push earnings feed only
+        # safe_push: fetch + rebase onto the new main + push, up to 3 tries, never
+        # --force; still failing -> this step (and the job) goes red.
         if: steps.holiday.outputs.skip != 'true'
         run: |
           cd stockdesk_repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          python scripts/safe_push.py --repo . --message "Evening earnings feed update" --add public/data/earnings/earnings_feed.json public/data/earnings/reason_cache.json
+          python scripts/safe_push.py --repo . --max-retries 3 --message "Evening earnings feed update" --add public/data/earnings/earnings_feed.json public/data/earnings/reason_cache.json
