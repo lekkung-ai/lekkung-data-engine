@@ -109,3 +109,22 @@ the token is missing, expired, or lacks the Actions read/write permission.
 - Body: the JSON body above, as raw request body (set request body type to JSON)
 - Schedule: whatever time you want the daily run to fire (e.g. 18:11 ICT / Asia-Bangkok, or convert to the timezone cron-job.org expects if it doesn't support IANA timezone names directly — check its schedule editor)
 - Save the token only inside cron-job.org's own job configuration (its custom headers field) — do not store it anywhere else.
+
+## Other workflow called from cron-job.org: earnings-evening (20:00 ICT, Mon-Fri)
+
+`earnings-evening.yml` (the light earnings-only run) has **no** `schedule:` trigger
+- cron-job.org is its only trigger, so it must not also be scheduled on GitHub
+(that would run it twice).
+
+```
+POST https://api.github.com/repos/lekkung-ai/lekkung-data-engine/actions/workflows/earnings-evening.yml/dispatches
+```
+
+- Same headers as above (same PAT scope: Actions read/write on this repo).
+- Body: `{"ref": "main"}` - the workflow has no inputs.
+- Schedule: 20:00 Asia/Bangkok, Monday-Friday. SET holidays are skipped inside the
+  workflow itself (`tools/core/set_holidays.py`), so the job can fire on every
+  weekday; a skipped run still ends green.
+- If the daily-scan or the morning IAA run is pushing at that moment, the run
+  waits (concurrency group `stockdesk-writers`, never cancelled) and its push
+  retries up to 3 times.

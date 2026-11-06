@@ -18,13 +18,14 @@ name: Earnings Evening Update
 # Holidays: skipped on SET holidays with tools/core/set_holidays.py (the same
 # list daily-scan uses for its warning) - no input to force a holiday run.
 #
-# workflow_dispatch: so cron-job.org can call it too if GitHub's schedule runs
-# late (see docs/external-trigger.md). GitHub schedules only fire from the
-# default branch, and can start 10-60 min late.
+# Trigger: workflow_dispatch ONLY, called by cron-job.org at 20:00 ICT Mon-Fri
+# (docs/external-trigger.md). There is deliberately NO `schedule:` here: GitHub's
+# own cron ('0 13 * * 1-5') would fire the same run a second time, 10-60 min late.
+# If the cron-job.org job is ever removed, add the schedule back:
+#   schedule:
+#     - cron: '0 13 * * 1-5' # 20:00 ICT (UTC+7) Mon-Fri
 
 on:
-  schedule:
-    - cron: '0 13 * * 1-5' # 20:00 ICT (UTC+7) Mon-Fri
   workflow_dispatch:
 
 # Shared with iaa-research-morning.yml (the other earnings writer); daily-scan.yml
