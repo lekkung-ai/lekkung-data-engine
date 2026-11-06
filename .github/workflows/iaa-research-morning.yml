@@ -8,14 +8,15 @@ name: IAA Research Morning Fetch
 # research earlier so it's usable during the trading day instead of only
 # showing up after the evening run.
 #
-# Like daily-scan.yml, this also accepts workflow_dispatch so it can be
-# triggered externally (cron-job.org) if GitHub's own schedule trigger turns
-# out to run late for this one too - see docs/external-trigger.md for the
-# same pattern already set up for the main pipeline.
+# Trigger: workflow_dispatch ONLY, called by cron-job.org at 09:45 ICT Mon-Fri
+# (docs/external-trigger.md). There is deliberately NO `schedule:` here: GitHub's
+# own cron ('45 2 * * 1-5') was running this 6-7 hours late (16:00-17:00 ICT) and
+# would fire the same run a second time if it stayed.
+# If the cron-job.org job is ever removed, add the schedule back:
+#   schedule:
+#     - cron: '45 2 * * 1-5' # 09:45 ICT (UTC+7) Mon-Fri
 
 on:
-  schedule:
-    - cron: '45 2 * * 1-5' # 09:45 ICT (UTC+7) Mon-Fri
   workflow_dispatch:
 
 # One earnings writer at a time (shared with earnings-evening.yml) - a run that

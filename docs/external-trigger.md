@@ -128,3 +128,19 @@ POST https://api.github.com/repos/lekkung-ai/lekkung-data-engine/actions/workflo
 - If the daily-scan or the morning IAA run is pushing at that moment, the run
   waits (concurrency group `stockdesk-writers`, never cancelled) and its push
   retries up to 3 times.
+
+## Other workflow called from cron-job.org: iaa-research-morning (09:45 ICT, Mon-Fri)
+
+`iaa-research-morning.yml` (IAA research + earnings feed) has **no** `schedule:` trigger
+- cron-job.org is its only trigger. GitHub's own cron ran it 6-7 hours late
+(16:00-17:00 ICT instead of 09:45), and keeping both would run it twice.
+
+```
+POST https://api.github.com/repos/lekkung-ai/lekkung-data-engine/actions/workflows/iaa-research-morning.yml/dispatches
+```
+
+- Same headers as above (same PAT scope: Actions read/write on this repo).
+- Body: `{"ref": "main"}` - the workflow has no inputs.
+- Schedule: 09:45 Asia/Bangkok, Monday-Friday.
+- Shares the concurrency group `stockdesk-writers` with earnings-evening: if the other
+  run is pushing, this one waits (never cancelled) and its push retries up to 3 times.
