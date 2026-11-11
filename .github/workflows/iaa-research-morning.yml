@@ -12,12 +12,27 @@ name: IAA Research Morning Fetch
 # (docs/external-trigger.md). There is deliberately NO `schedule:` here: GitHub's
 # own cron ('45 2 * * 1-5') was running this 6-7 hours late (16:00-17:00 ICT) and
 # would fire the same run a second time if it stayed.
+#
+# Earnings season: only the earnings steps (fetch_earnings -> extract_reason ->
+# enrich_earnings_pead -> push of the two earnings files) are gated by the season
+# check (tools/core/earnings_season.py: annual 1 Feb-31 Mar, Q1 15 Apr-20 May,
+# Q2 15 Jul-20 Aug, Q3 15 Oct-20 Nov). IAA research (research_iaa.json) runs every
+# weekday as before. `ignore_season` (default false) forces the earnings steps
+# outside the season. No SET-holiday check exists in this workflow (and none is
+# added here).
+#
 # If the cron-job.org job is ever removed, add the schedule back:
 #   schedule:
 #     - cron: '45 2 * * 1-5' # 09:45 ICT (UTC+7) Mon-Fri
 
 on:
   workflow_dispatch:
+    inputs:
+      ignore_season:
+        description: 'Run the earnings steps outside the earnings season (does NOT skip the SET-holiday check)'
+        type: boolean
+        default: false
+        required: false
 
 # One earnings writer at a time (shared with earnings-evening.yml) - a run that
 # finds the other one pushing waits, it is never cancelled.
@@ -37,6 +52,33 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+
+      - name: Check earnings season
+        id: season
+        # Earnings steps run only in the filing season (tools/core/earnings_season.py:
+        # annual 1 Feb-31 Mar, Q1 15 Apr-20 May, Q2 15 Jul-20 Aug, Q3 15 Oct-20 Nov,
+        # Asia/Bangkok date). Outside it they are skipped and the job stays green.
+        # ignore_season (manual dispatch) skips only this check.
+        # Gates the earnings steps below only - IAA research always runs.
+        env:
+          IGNORE_SEASON: ${{ inputs.ignore_season }}
+        run: |
+          python - <<'PYEOF'
+          import os
+          from tools.core.earnings_season import bangkok_today, season_gate
+
+          today = bangkok_today()
+          skip, msg = season_gate(today, os.environ.get('IGNORE_SEASON', '').lower() == 'true')
+          print(msg)
+          if skip:
+              print(f"::notice::{msg}")
+          summary = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summary:
+              with open(summary, 'a', encoding='utf-8') as f:
+                  print('### Earnings season', msg, '', sep=chr(10), file=f)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              print(f"skip={'true' if skip else 'false'}", file=f)
+          PYEOF
 
       - name: Install Playwright (only dependency this script needs)
         run: |
@@ -64,6 +106,7 @@ jobs:
           python scripts/safe_push.py --repo . --message "Morning IAA research update" --add data/scans/research_iaa.json
 
       - name: Install PyMuPDF for extract_reason.py
+        if: steps.season.outputs.skip != 'true'
         # Was missing, so extract_reason.py failed on `import fitz` every morning
         # (hidden by continue-on-error). Pinned to what daily-scan.yml gets from
         # requirements.txt today (unpinned "pymupdf" -> 2.1 on 2026-11-05).
@@ -71,6 +114,7 @@ jobs:
         run: pip install pymupdf==2.1
 
       - name: Fetch earnings feed (F45 / MD&A / งบการเงิน)
+        if: steps.season.outputs.skip != 'true'
         # Second (and only other) script this morning run does - no
         # Playwright/browser needed, just JSON API calls, so no extra deps
         # beyond the Python setup already above. Isolated with
@@ -82,6 +126,7 @@ jobs:
           python -X utf8 scripts/fetch_earnings.py
 
       - name: Extract earnings reasons (rule-based, no AI)
+        if: steps.season.outputs.skip != 'true'
         # fetch_earnings.py above fully regenerates earnings_feed.json every
         # run, so this must run every time too or the reason/reason_source
         # fields it wrote last run get silently wiped.
@@ -91,12 +136,14 @@ jobs:
           python -X utf8 scripts/extract_reason.py
 
       - name: Enrich earnings with PEAD (gap & drift)
+        if: steps.season.outputs.skip != 'true'
         continue-on-error: true
         run: |
           cd stockdesk_repo
           python -X utf8 scripts/enrich_earnings_pead.py
 
       - name: Commit and push earnings feed
+        if: steps.season.outputs.skip != 'true'
         # safe_push: fetch + rebase onto the new main + push, up to 3 tries, never
         # --force. Not continue-on-error: if it still can't push, the job goes red
         # (the IAA push above has already landed by then).

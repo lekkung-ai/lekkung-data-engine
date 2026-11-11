@@ -18,6 +18,13 @@ name: Earnings Evening Update
 # Holidays: skipped on SET holidays with tools/core/set_holidays.py (the same
 # list daily-scan uses for its warning) - no input to force a holiday run.
 #
+# Earnings season only: outside tools/core/earnings_season.py's windows (annual
+# 1 Feb-31 Mar, Q1 15 Apr-20 May, Q2 15 Jul-20 Aug, Q3 15 Oct-20 Nov) the run ends
+# green right after the holiday + season checks - no SET fetch, no push.
+# workflow_dispatch input `ignore_season` (default false) forces a manual run
+# outside the season; it never skips the holiday check. daily-scan.yml is not
+# affected (it fetches earnings every trading day all year).
+#
 # Trigger: workflow_dispatch ONLY, called by cron-job.org at 20:00 ICT Mon-Fri
 # (docs/external-trigger.md). There is deliberately NO `schedule:` here: GitHub's
 # own cron ('0 13 * * 1-5') would fire the same run a second time, 10-60 min late.
@@ -27,6 +34,12 @@ name: Earnings Evening Update
 
 on:
   workflow_dispatch:
+    inputs:
+      ignore_season:
+        description: 'Run the earnings steps outside the earnings season (does NOT skip the SET-holiday check)'
+        type: boolean
+        default: false
+        required: false
 
 # Shared with iaa-research-morning.yml (the other earnings writer); daily-scan.yml
 # is deliberately not in it. cancel-in-progress: false = a run that finds the other
@@ -70,14 +83,41 @@ jobs:
               f.write(f"skip={'true' if skip else 'false'}\n")
           PYEOF
 
+      - name: Check earnings season
+        id: season
+        if: steps.holiday.outputs.skip != 'true'
+        # Earnings steps run only in the filing season (tools/core/earnings_season.py:
+        # annual 1 Feb-31 Mar, Q1 15 Apr-20 May, Q2 15 Jul-20 Aug, Q3 15 Oct-20 Nov,
+        # Asia/Bangkok date). Outside it they are skipped and the job stays green.
+        # ignore_season (manual dispatch) skips only this check - SET holidays/weekends are still skipped.
+        env:
+          IGNORE_SEASON: ${{ inputs.ignore_season }}
+        run: |
+          python - <<'PYEOF'
+          import os
+          from tools.core.earnings_season import bangkok_today, season_gate
+
+          today = bangkok_today()
+          skip, msg = season_gate(today, os.environ.get('IGNORE_SEASON', '').lower() == 'true')
+          print(msg)
+          if skip:
+              print(f"::notice::{msg}")
+          summary = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summary:
+              with open(summary, 'a', encoding='utf-8') as f:
+                  print('### Earnings season', msg, '', sep=chr(10), file=f)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              print(f"skip={'true' if skip else 'false'}", file=f)
+          PYEOF
+
       - name: Install PyMuPDF (extract_reason.py; the rest is stdlib)
         # Pinned to what daily-scan.yml gets from requirements.txt today
         # (unpinned "pymupdf" -> 2.1 on 2026-11-05).
-        if: steps.holiday.outputs.skip != 'true'
+        if: steps.holiday.outputs.skip != 'true' && steps.season.outputs.skip != 'true'
         run: pip install pymupdf==2.1
 
       - name: Checkout stockdesk repository
-        if: steps.holiday.outputs.skip != 'true'
+        if: steps.holiday.outputs.skip != 'true' && steps.season.outputs.skip != 'true'
         uses: actions/checkout@v6
         with:
           repository: lekkung-ai/lekkung-stockdesk
@@ -87,7 +127,7 @@ jobs:
       - name: Fetch earnings feed (F45 / MD&A / งบการเงิน)
         # Not continue-on-error: if this fails there is nothing new to push and
         # the run should show red.
-        if: steps.holiday.outputs.skip != 'true'
+        if: steps.holiday.outputs.skip != 'true' && steps.season.outputs.skip != 'true'
         run: |
           cd stockdesk_repo
           python -X utf8 scripts/fetch_earnings.py --history-budget 40
@@ -95,14 +135,14 @@ jobs:
       - name: Extract earnings reasons (rule-based, no AI)
         # fetch_earnings.py regenerates earnings_feed.json - same as the other runs,
         # this step must follow it.
-        if: steps.holiday.outputs.skip != 'true'
+        if: steps.holiday.outputs.skip != 'true' && steps.season.outputs.skip != 'true'
         continue-on-error: true
         run: |
           cd stockdesk_repo
           python -X utf8 scripts/extract_reason.py
 
       - name: Enrich earnings with PEAD (gap & drift)
-        if: steps.holiday.outputs.skip != 'true'
+        if: steps.holiday.outputs.skip != 'true' && steps.season.outputs.skip != 'true'
         continue-on-error: true
         run: |
           cd stockdesk_repo
@@ -111,7 +151,7 @@ jobs:
       - name: Commit and push earnings feed only
         # safe_push: fetch + rebase onto the new main + push, up to 3 tries, never
         # --force; still failing -> this step (and the job) goes red.
-        if: steps.holiday.outputs.skip != 'true'
+        if: steps.holiday.outputs.skip != 'true' && steps.season.outputs.skip != 'true'
         run: |
           cd stockdesk_repo
           git config user.name "github-actions[bot]"

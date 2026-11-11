@@ -121,10 +121,13 @@ POST https://api.github.com/repos/lekkung-ai/lekkung-data-engine/actions/workflo
 ```
 
 - Same headers as above (same PAT scope: Actions read/write on this repo).
-- Body: `{"ref": "main"}` - the workflow has no inputs.
+- Body: `{"ref": "main"}` - the only input, `ignore_season`, is optional (default `false`), so the
+  cron-job.org body stays exactly this.
 - Schedule: 20:00 Asia/Bangkok, Monday-Friday. SET holidays are skipped inside the
   workflow itself (`tools/core/set_holidays.py`), so the job can fire on every
   weekday; a skipped run still ends green.
+- **Earnings season only:** outside the season the run also skips itself (see
+  "Earnings season" below) and ends green.
 - If the daily-scan or the morning IAA run is pushing at that moment, the run
   waits (concurrency group `stockdesk-writers`, never cancelled) and its push
   retries up to 3 times.
@@ -140,7 +143,40 @@ POST https://api.github.com/repos/lekkung-ai/lekkung-data-engine/actions/workflo
 ```
 
 - Same headers as above (same PAT scope: Actions read/write on this repo).
-- Body: `{"ref": "main"}` - the workflow has no inputs.
+- Body: `{"ref": "main"}` - the only input, `ignore_season`, is optional (default `false`), so the
+  cron-job.org body stays exactly this.
 - Schedule: 09:45 Asia/Bangkok, Monday-Friday.
+- **Earnings season only (earnings part):** outside the season the earnings feed steps are
+  skipped (see "Earnings season" below); IAA research still runs every weekday, and the run ends green.
 - Shares the concurrency group `stockdesk-writers` with earnings-evening: if the other
   run is pushing, this one waits (never cancelled) and its push retries up to 3 times.
+
+## Earnings season: the morning and evening runs skip themselves outside it
+
+`iaa-research-morning.yml` (earnings part) and `earnings-evening.yml` only do work
+during the SET filing season. The windows live in one place,
+`tools/core/earnings_season.py` (month/day, valid every year, Asia/Bangkok date,
+both ends included):
+
+| Season | Window |
+|---|---|
+| Annual statements | 1 Feb - 31 Mar |
+| Q1 | 15 Apr - 20 May |
+| Q2 | 15 Jul - 20 Aug |
+| Q3 | 15 Oct - 20 Nov |
+
+Outside these windows a "Check earnings season" step marks the run as skipped: nothing
+is fetched from SET, nothing is pushed to stockdesk, the reason is written to the log
+and the job summary, and the job ends **green**. Nothing changes on the cron-job.org
+side - keep calling both workflows every weekday with `{"ref": "main"}`.
+
+- **Evening:** the season check comes right after the SET-holiday check; a holiday is
+  skipped first, then an off-season day.
+- **Morning:** only the earnings steps (fetch_earnings, extract_reason, PEAD, push of the
+  earnings files) are gated. `research_iaa.json` is fetched and pushed every weekday all year.
+  This workflow has no SET-holiday check (unchanged).
+- **`daily-scan.yml` is not affected:** it still fetches earnings every trading day all year.
+- **Manual run outside the season:** dispatch with the optional boolean input
+  `ignore_season` = `true` (Actions tab -> Run workflow, or `"inputs": {"ignore_season": "true"}`
+  in the API body - a string, like `force`). It skips only the season check; the evening
+  run still skips SET holidays and weekends.
