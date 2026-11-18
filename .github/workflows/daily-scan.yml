@@ -19,6 +19,18 @@ on:
         type: boolean
         default: false
 
+# One daily-scan at a time. cron-job.org (18:00 ICT) and the Vercel backup cron (18:11)
+# can both dispatch this workflow: the second run waits in the queue (never cancels
+# the one that is running), and its check-freshness job - which runs only once the
+# group is free - then sees the first run's push and skips (green).
+# Its own group on purpose, NOT "stockdesk-writers": GitHub keeps at most one waiting
+# run per group, so a morning/evening earnings dispatch could replace a waiting
+# daily-scan. Those two write only the earnings/research files, at 09:45 and 20:00
+# (outside the usual 18:00-18:20 run); an overlap is handled by safe_push (rebase + retry).
+concurrency:
+  group: daily-scan
+  cancel-in-progress: false
+
 jobs:
   check-freshness:
     # Guards against a run duplicating a same-day update that's already
