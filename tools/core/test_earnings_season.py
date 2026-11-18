@@ -145,16 +145,26 @@ def test_every_evening_earnings_step_gated_by_both():
 
 
 def test_morning_gates_only_earnings_steps():
-    ungated = {"Checkout data_engine repository", "Setup Python", "Check earnings season",
-               "Install Playwright (only dependency this script needs)", "Checkout stockdesk repository",
-               "Fetch IAA research (merges with existing file - no gaps)",
-               "Commit and push research_iaa.json only"}
+    """ทุกขั้นหลังเช็ควันหยุด gate ด้วยวันหยุด · ขั้นดึงงบ gate ด้วยวันหยุด + ฤดูงบ · ขั้น research ไม่ดูฤดูงบ"""
+    always = {"Checkout data_engine repository", "Setup Python", "Skip SET holidays and weekends"}
+    research = {"Check earnings season",
+                "Install Playwright (only dependency this script needs)", "Checkout stockdesk repository",
+                "Fetch IAA research (merges with existing file - no gaps)",
+                "Commit and push research_iaa.json only"}
+    seen = set()
     for s in _steps(MORNING):
-        if s["name"] in ungated:
-            assert "if" not in s, f"research step must always run: {s['name']}"
+        seen.add(s["name"])
+        if s["name"] in always:
+            assert "if" not in s, s["name"]
+        elif s["name"] in research:
+            assert s["if"] == "steps.holiday.outputs.skip != 'true'", s["name"]
         else:
-            assert s["if"] == "steps.season.outputs.skip != 'true'", s["name"]
-    assert len([s for s in _steps(MORNING) if "if" in s]) == 5
+            assert s["if"] == "steps.holiday.outputs.skip != 'true' && steps.season.outputs.skip != 'true'", s["name"]
+    assert always | research <= seen
+    assert len([s for s in _steps(MORNING) if "steps.season.outputs.skip" in s.get("if", "")]) == 5
+    ids = [s.get("id") for s in _steps(MORNING)]
+    assert ids.index("holiday") < ids.index("season")
+    assert "ignore_season" not in str(_step(MORNING, "holiday")).lower()
 
 
 # ---------- จำลองขั้นเช็คฤดูใน workflow จริง ----------
@@ -208,3 +218,48 @@ def test_ignore_season_does_not_bypass_holiday_step(tmp_path):
     # 11 พ.ย. 2026 (พุธ ไม่ใช่วันหยุด) → รัน
     out, _, _ = _run_step(EVENING, "holiday", datetime(2026, 11, 11, 3, 0, tzinfo=UTC), False, tmp_path)
     assert out.strip() == "skip=false"
+
+
+# ---------- รอบเช้า: เช็ควันหยุด SET + เสาร์–อาทิตย์ (holiday_gate) ----------
+@pytest.mark.parametrize("ignore", [False, True])
+@pytest.mark.parametrize("now, expect_skip, word", [
+    (datetime(2026, 10, 13, 2, 45, tzinfo=UTC), "true", "วันหยุด SET"),   # อ. 13 ต.ค. 2026 (ในตาราง) 09:45 ไทย
+    (datetime(2026, 10, 16, 2, 45, tzinfo=UTC), "true", "วันหยุด SET"),   # ศ. 16 ต.ค. 2026 (SPECIAL)
+    (datetime(2026, 11, 14, 2, 45, tzinfo=UTC), "true", "วันเสาร์"),       # ส. 14 พ.ย. 2026
+    (datetime(2026, 11, 15, 2, 45, tzinfo=UTC), "true", "วันอาทิตย์"),     # อา. 15 พ.ย. 2026
+    (datetime(2026, 11, 18, 2, 45, tzinfo=UTC), "false", "วันทำการ SET"),  # พ. 18 พ.ย. 2026
+    (datetime(2026, 11, 13, 17, 30, tzinfo=UTC), "true", "วันเสาร์"),      # ส. 14 พ.ย. 00:30 ไทย (UTC ยังเป็นศุกร์)
+])
+def test_morning_holiday_step(now, expect_skip, word, ignore, tmp_path):
+    out, _, stdout = _run_step(MORNING, "holiday", now, ignore, tmp_path)
+    assert out.strip() == f"skip={expect_skip}"
+    lines = [ln for ln in stdout.splitlines() if ln.strip()]
+    assert len(lines) == 1 and word in lines[0] and bangkok_today(now).isoformat() in lines[0]
+    assert lines[0].startswith("::notice::") == (expect_skip == "true")
+
+
+@pytest.mark.parametrize("ignore", [False, True])
+@pytest.mark.parametrize("now, holiday_skip, season_skip_no_ignore", [
+    (datetime(2026, 10, 13, 2, 45, tzinfo=UTC), True, False),   # วันหยุดในฤดูงบ
+    (datetime(2026, 12, 7, 2, 45, tzinfo=UTC), True, True),     # วันหยุดนอกฤดูงบ
+    (datetime(2026, 11, 18, 2, 45, tzinfo=UTC), False, False),  # วันทำการในฤดูงบ
+    (datetime(2026, 12, 1, 2, 45, tzinfo=UTC), False, True),    # วันทำการนอกฤดูงบ
+])
+def test_morning_which_steps_run(now, holiday_skip, season_skip_no_ignore, ignore, tmp_path):
+    """ผลรวมของสองขั้น: วันหยุด → ไม่มีอะไรรันเลย (ignore_season ไม่ช่วย) · วันทำการ → research รัน
+    และขั้นดึงงบรันตามฤดูงบ / ignore_season เหมือนเดิม"""
+    out, _, _ = _run_step(MORNING, "holiday", now, ignore, tmp_path)
+    assert out.strip() == f"skip={'true' if holiday_skip else 'false'}"
+    if holiday_skip:
+        return  # ขั้น season และทุกขั้นถัดไปมี if: steps.holiday.outputs.skip != 'true' (test ข้างบน)
+    out, _, _ = _run_step(MORNING, "season", now, ignore, tmp_path)
+    assert out.strip() == f"skip={'true' if (season_skip_no_ignore and not ignore) else 'false'}"
+
+
+def test_holiday_gate_unit():
+    from tools.core.set_holidays import holiday_gate
+    assert holiday_gate(date(2026, 12, 31))[0] is True
+    assert holiday_gate(date(2026, 12, 30))[0] is False
+    skip, msg = holiday_gate(date(2027, 1, 4))  # จ. ปีที่ยังไม่มีตาราง → ไม่ข้าม แต่บอกไว้
+    assert skip is False and "2027" in msg
+    assert holiday_gate(date(2027, 1, 2))[0] is True  # เสาร์ ยังข้ามได้แม้ไม่มีตาราง

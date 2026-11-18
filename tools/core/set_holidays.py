@@ -3,7 +3,8 @@ set_holidays.py — วันหยุดทำการของ SET ที่ 
 เป็นวันหยุดจริง หรืออาจเป็นแหล่งข้อมูลล่ม (run_all.py ตัดสินจากข้อมูลล่าสุดอย่างเดียว ถ้า Yahoo + TradingView
 ล่มพร้อมกัน ก็ดูเหมือนตลาดปิด แล้วข้ามทั้งรอบแบบ job เขียว)
 
-ใช้เพื่อ "เตือน" เท่านั้น — ไม่ใช้ตัดสินว่าตลาดเปิดไหม (นั่นคือ trading_calendar.is_non_trading_day)
+daily-scan ใช้เพื่อ "เตือน" เท่านั้น — ไม่ใช้ตัดสินว่าตลาดเปิดไหม (นั่นคือ trading_calendar.is_non_trading_day)
+earnings-evening.yml / iaa-research-morning.yml (holiday_gate) ใช้ข้ามรอบในวันหยุด — สองรอบนั้นไม่มีข้อมูลราคาให้ดู
 
 ที่มา 2026: SET Calendar 2026 (media.set.or.th/set/Documents/2025/Nov/SET-Calendar-2026-EN.pdf) +
 วันหยุดพิเศษที่ประกาศภายหลัง (ยืนยันจาก SET_INDEX ไม่มีแท่งวันนั้น) ระบุไว้ใน SPECIAL
@@ -12,7 +13,7 @@ set_holidays.py — วันหยุดทำการของ SET ที่ 
 """
 
 from datetime import date
-from typing import Dict, FrozenSet, Optional
+from typing import Dict, FrozenSet, Optional, Tuple
 
 _HOLIDAYS: Dict[int, FrozenSet[date]] = {
     2026: frozenset(
@@ -53,6 +54,21 @@ def is_set_holiday(d: date) -> bool:
 
 def has_calendar(year: int) -> bool:
     return year in _HOLIDAYS
+
+
+def holiday_gate(today: date) -> Tuple[bool, str]:
+    """ขั้นเช็ควันหยุดของ workflow ที่ไม่มีข้อมูลราคาให้ดู (iaa-research-morning.yml) → (skip, ข้อความ 1 บรรทัด)
+    today = วันที่ตามเวลาไทยแล้ว · เสาร์–อาทิตย์ หรือวันหยุด SET ในรายการ → skip
+    ปีที่ยังไม่มีรายการ → ไม่ skip วันจันทร์–ศุกร์ (ข้อความบอกไว้ · workflow เตือนแยก)"""
+    if today.weekday() >= 5:
+        day = "เสาร์" if today.weekday() == 5 else "อาทิตย์"
+        return True, f"{today}: วัน{day} ตลาดปิด - ข้ามทั้งรอบ"
+    if is_set_holiday(today):
+        why = SPECIAL.get(today, "วันหยุด SET ตามปฏิทิน")
+        return True, f"{today}: วันหยุด SET ({why}) - ข้ามทั้งรอบ"
+    if not has_calendar(today.year):
+        return False, f"{today}: ยังไม่มีรายการวันหยุดปี {today.year} ใน tools/core/set_holidays.py - รันทุกวันจันทร์–ศุกร์"
+    return False, f"{today}: วันทำการ SET - รันตามปกติ"
 
 
 def non_trading_warning(today: date) -> Optional[str]:
