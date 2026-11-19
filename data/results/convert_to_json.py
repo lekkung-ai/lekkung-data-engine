@@ -32,6 +32,7 @@ DAILY_PRICES_FILE = INPUT_DIR / "daily_prices.csv"  # universe เต็ม พ�
 
 FILES = {
     "sepa": "sepa_result.csv",
+    "sepa_checklist": "sepa_checklist.csv",  # SEPA 8 ข้อของทุกหุ้น (รวมตัวไม่ผ่าน) → หน้า /stock/[ticker] เท่านั้น
     "oliver_kell": "oliver_kell_signals.csv",
     "market_stage": "pine_stages.csv",   # แก้บั๊กแล้ว verify ตรงกับต้นฉบับ Pine Script "Market Stage"
     "breakout": "accumulation_breakout.csv",
@@ -59,7 +60,9 @@ COMBINED_DEPS = {"market_stage", "rs_ranking", "weinstein"}
 # RS_Rating ของกองทุน/REIT เป็น null (3_calculate_rs.py) → pandas อ่านคอลัมน์เป็น float
 # (99 → 99.0) · คืนเป็นจำนวนเต็ม + null เหมือนเดิมให้ไฟล์ที่เดิมเป็น int
 # (oliver_kell ไม่อยู่ในนี้ — scan_oliver_kell.py เขียน RS_Rating เป็น float มาแต่เดิม)
-INT_RS_RATING_SCANS = {"rs_ranking", "sepa", "weinstein"}
+INT_RS_RATING_SCANS = {"rs_ranking", "sepa", "weinstein", "sepa_checklist"}
+# ไฟล์ใหญ่ (ทุกหุ้น) ที่ไม่มีใครอ่านด้วยตา → เขียน JSON แบบไม่เว้นวรรค ให้ไฟล์เล็ก
+COMPACT_JSON_SCANS = {"sepa_checklist"}
 
 # หมายเหตุ: ไฟล์ต่อไปนี้ "พักไว้ก่อน" ไม่ใช้ในรอบนี้
 #   - wyckoff_stages.csv           -> logic คนละแบบกับ pine_stages, เก็บไว้เผื่ออนาคตแต่ไม่ใช้เป็น stage หลัก
@@ -399,7 +402,8 @@ def main():
 
     for key, records in individual.items():
         out_path = OUTPUT_DIR / f"{key}.json"
-        out_path.write_text(json.dumps(records, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+        fmt = {"separators": (",", ":")} if key in COMPACT_JSON_SCANS else {"indent": 2}
+        out_path.write_text(json.dumps(records, ensure_ascii=False, allow_nan=False, **fmt), encoding="utf-8")
 
     generated_at_manifest = {key: generated_at for key in individual.keys()}
     (OUTPUT_DIR / "generated_at.json").write_text(

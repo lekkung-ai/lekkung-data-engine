@@ -357,6 +357,9 @@ jobs:
           # zero benefit. Drop it from the archive; data/scans/ still gets the
           # live copy from the step above.
           rm -f stockdesk_repo/data/history/$DATESTAMP/topmover_charts.json
+          # sepa_checklist.json (SEPA 8 ข้อของทุกหุ้น ~870 แถว) = ไฟล์ปัจจุบันของหน้า /stock/[ticker]
+          # อย่างเดียว ไม่มีใครอ่านฉบับย้อนหลัง → ไม่เก็บลง archive (เหตุผลเดียวกับ topmover_charts)
+          rm -f stockdesk_repo/data/history/$DATESTAMP/sepa_checklist.json
 
           cd stockdesk_repo
           # Update index.json

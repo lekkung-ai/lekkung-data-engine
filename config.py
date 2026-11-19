@@ -48,6 +48,8 @@ DAILY_FILE = RESULTS_DIR / "daily_prices.csv"
 PRICE_FRESHNESS_FILE = META_DIR / "price_freshness.json"
 RS_FILE = RESULTS_DIR / "rs_ranking.csv"
 SEPA_FILE = RESULTS_DIR / "sepa_result.csv"
+# SEPA 8 ข้อของทุกหุ้นที่คำนวณได้ (รวมตัวไม่ผ่าน) → หน้า /stock/[ticker] · ไม่กระทบ sepa_result.csv
+SEPA_CHECKLIST_FILE = RESULTS_DIR / "sepa_checklist.csv"
 COMBO_FILE = RESULTS_DIR / "sepa_stage2_combo.csv"
 WYCKOFF_FILE = RESULTS_DIR / "wyckoff_stages.csv"
 PINE_STAGES_FILE = RESULTS_DIR / "pine_stages.csv"
