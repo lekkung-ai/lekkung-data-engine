@@ -8,7 +8,7 @@ import requests
 
 # 🔌 เชื่อมต่อระบบเดิมของคุณ (ดึง Path จาก config.py)
 sys.path.append(str(Path(__file__).resolve().parents[2]))
-from config import ADTV_MIN_MB, HISTORY_DIR, RESULTS_DIR, RS_FILE  # type: ignore
+from config import ADTV_MIN_MB, HISTORY_DIR, KELL_CHECKLIST_FILE, RESULTS_DIR, RS_FILE  # type: ignore
 from utils import calculate_adtv, iter_stock_files, load_fund_tickers, load_full_df, load_price_volume  # type: ignore
 
 # DUPLICATED from scan_sepa.py: fetch_fundamental_data() + fundamental_pass_for() + FUND thresholds
@@ -95,6 +95,63 @@ def pct_from_52w_high(file_path, price):
         return None
 
 
+def _r2(x):
+    return round(float(x), 2)
+
+
+def kell_checklist_row(ticker, price, sma_50, sma_200, sma_200_20d_ago, ema_10, ema_20, ema_10_5d_ago, ema_20_5d_ago):
+    """แถวของ kell_checklist — K1..K7 = เงื่อนไขเดิมของ scan_oliver_kell_strict() ตามลำดับในโค้ด
+    (นิพจน์ชุดเดียวกับด้านล่าง ห้ามเปลี่ยนเกณฑ์) · ค่าไม่ finite → None (ไม่ลงไฟล์)
+    *_20D_Ago = sma200.iloc[-20] · *_5D_Ago = iloc[-5] (ตำแหน่งเดียวกับที่ scan ใช้จริง)
+    All_Pass ใส่ทีหลังจากผลจริงของ oliver_kell_signals.csv"""
+    vals = [price, sma_50, sma_200, sma_200_20d_ago, ema_10, ema_20, ema_10_5d_ago, ema_20_5d_ago]
+    vals = [float(v) for v in vals]
+    if not all(math.isfinite(v) for v in vals) or ema_10 == 0 or ema_20 == 0:
+        return None
+    price, sma_50, sma_200, sma_200_20d_ago, ema_10, ema_20, ema_10_5d_ago, ema_20_5d_ago = vals
+    dist_ema10_pct = abs(price - ema_10) / ema_10 * 100
+    dist_ema20_pct = abs(price - ema_20) / ema_20 * 100
+    tests = [
+        price > sma_50,                                     # K1 ราคา > SMA50
+        sma_50 > sma_200,                                   # K2 SMA50 > SMA200
+        sma_200 > sma_200_20d_ago,                          # K3 SMA200 ชันขึ้น
+        (price > ema_10) and (price > ema_20),              # K4 ราคาเหนือ EMA10 และ EMA20
+        ema_10 > ema_20,                                    # K5 EMA10 > EMA20
+        (ema_10 > ema_10_5d_ago) and (ema_20 > ema_20_5d_ago),  # K6 EMA10/EMA20 ชันขึ้น
+        (dist_ema10_pct <= 3.5) or (dist_ema20_pct <= 3.5),  # K7 ห่าง EMA10 หรือ EMA20 ไม่เกิน 3.5%
+    ]
+    row = {
+        "Ticker": ticker,
+        "Price": _r2(price),
+        "SMA_50": _r2(sma_50),
+        "SMA_200": _r2(sma_200),
+        "SMA_200_20D_Ago": _r2(sma_200_20d_ago),
+        "EMA_10": _r2(ema_10),
+        "EMA_20": _r2(ema_20),
+        "EMA_10_5D_Ago": _r2(ema_10_5d_ago),
+        "EMA_20_5D_Ago": _r2(ema_20_5d_ago),
+        "Dist_EMA10_Pct": _r2(dist_ema10_pct),
+        "Dist_EMA20_Pct": _r2(dist_ema20_pct),
+    }
+    row.update({f"K{i}": bool(t) for i, t in enumerate(tests, start=1)})
+    row["Pass_Count"] = sum(bool(t) for t in tests)
+    return row
+
+
+def write_kell_checklist(rows, path=None):
+    """เขียน kell_checklist.csv · พังต้องไม่ทำให้ scan ล้ม และไม่กระทบ oliver_kell_signals.csv"""
+    path = path or KELL_CHECKLIST_FILE
+    try:
+        if not rows:
+            print("⚠️ kell_checklist: ไม่มีหุ้นที่คำนวณได้ — ไม่เขียนไฟล์ (คงไฟล์เดิม)")
+            return
+        df = pd.DataFrame(rows).sort_values("Ticker")
+        df.to_csv(path, index=False, encoding="utf-8-sig")
+        print(f"📋 kell_checklist: {len(df)} ตัว (ผ่านครบ {int(df['All_Pass'].sum())}) → {Path(path).name}")
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️ kell_checklist เขียนไม่สำเร็จ (oliver_kell ไม่กระทบ): {e}")
+
+
 def scan_oliver_kell_strict():
     # กำหนดไฟล์ผลลัพธ์
     output_path = RESULTS_DIR / "oliver_kell_signals.csv"
@@ -107,6 +164,7 @@ def scan_oliver_kell_strict():
         f"🏆 [U.S. Champion Logic] กำลังสแกนหา 'หุ้นผู้นำ' ตามสูตร Strict Oliver Kell... ({datetime.now().strftime('%H:%M')})"
     )
     passed_stocks = []
+    checklist_rows = []  # ทุกหุ้นที่คำนวณ 7 ข้อได้ (รวมตัวไม่ผ่าน) → kell_checklist.csv
 
     # RS Rating — Kell ไม่ gate RS จึงไม่มีค่า = None (ไม่ใช่ 0 ซึ่งเป็นค่าปลอม)
     rs_dict = {}
@@ -127,6 +185,8 @@ def scan_oliver_kell_strict():
         ticker = file_path.stem
         if ticker.upper() in fund_tickers:  # กองทุน/REIT ไม่เข้า scanner หุ้น
             continue
+        ck_row = None
+        n_passed_before = len(passed_stocks)
         try:
             # เปลี่ยน min_length เป็น 220 เพราะเราต้องเช็คเส้น SMA200 ย้อนหลังไปอีก 20 วัน
             price_series, vol_series = load_price_volume(file_path, min_length=220)
@@ -147,6 +207,16 @@ def scan_oliver_kell_strict():
             sma200 = price_series.rolling(window=200).mean()
 
             curr_price = float(price_series.iloc[-1])
+
+            # kell_checklist: ค่าชุดเดียวกับด้านล่าง · error ตรงนี้ต้องไม่กระทบแถว Kell
+            try:
+                ck_row = kell_checklist_row(
+                    ticker, curr_price, sma50.iloc[-1], sma200.iloc[-1], sma200.iloc[-20],
+                    ema10.iloc[-1], ema20.iloc[-1], ema10.iloc[-5], ema20.iloc[-5],
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"⚠️ kell_checklist row error {ticker}: {e}")
+                ck_row = None
 
             # --- [ด่านที่ 2] Trend Template (ต้องเป็นขาขึ้น Stage 2) ---
             is_stage_2 = (curr_price > float(sma50.iloc[-1])) and (
@@ -214,6 +284,13 @@ def scan_oliver_kell_strict():
         except Exception as e:
             # ข้ามตัวที่มีปัญหา (เช่น ข้อมูลแหว่ง)
             pass
+        finally:
+            if ck_row is not None:
+                # All_Pass = อยู่ใน oliver_kell_signals.csv จริง (ไม่คำนวณซ้ำ)
+                ck_row["All_Pass"] = len(passed_stocks) > n_passed_before
+                checklist_rows.append(ck_row)
+
+    write_kell_checklist(checklist_rows)
 
     # แสดงผลลัพธ์
     if passed_stocks:

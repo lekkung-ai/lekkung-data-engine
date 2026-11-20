@@ -360,6 +360,7 @@ jobs:
           # sepa_checklist.json (SEPA 8 ข้อของทุกหุ้น ~870 แถว) = ไฟล์ปัจจุบันของหน้า /stock/[ticker]
           # อย่างเดียว ไม่มีใครอ่านฉบับย้อนหลัง → ไม่เก็บลง archive (เหตุผลเดียวกับ topmover_charts)
           rm -f stockdesk_repo/data/history/$DATESTAMP/sepa_checklist.json
+          rm -f stockdesk_repo/data/history/$DATESTAMP/kell_checklist.json  # Kell 7 ข้อของทุกหุ้น — เหตุผลเดียวกับ sepa_checklist
 
           cd stockdesk_repo
           # Update index.json

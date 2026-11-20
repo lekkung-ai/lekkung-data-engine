@@ -34,6 +34,7 @@ FILES = {
     "sepa": "sepa_result.csv",
     "sepa_checklist": "sepa_checklist.csv",  # SEPA 8 ข้อของทุกหุ้น (รวมตัวไม่ผ่าน) → หน้า /stock/[ticker] เท่านั้น
     "oliver_kell": "oliver_kell_signals.csv",
+    "kell_checklist": "kell_checklist.csv",  # Kell 7 ข้อของทุกหุ้น (รวมตัวไม่ผ่าน) → หน้า /stock/[ticker] เท่านั้น
     "market_stage": "pine_stages.csv",   # แก้บั๊กแล้ว verify ตรงกับต้นฉบับ Pine Script "Market Stage"
     "breakout": "accumulation_breakout.csv",
     "rs_ranking": "rs_ranking.csv",
@@ -62,7 +63,7 @@ COMBINED_DEPS = {"market_stage", "rs_ranking", "weinstein"}
 # (oliver_kell ไม่อยู่ในนี้ — scan_oliver_kell.py เขียน RS_Rating เป็น float มาแต่เดิม)
 INT_RS_RATING_SCANS = {"rs_ranking", "sepa", "weinstein", "sepa_checklist"}
 # ไฟล์ใหญ่ (ทุกหุ้น) ที่ไม่มีใครอ่านด้วยตา → เขียน JSON แบบไม่เว้นวรรค ให้ไฟล์เล็ก
-COMPACT_JSON_SCANS = {"sepa_checklist"}
+COMPACT_JSON_SCANS = {"sepa_checklist", "kell_checklist"}
 
 # หมายเหตุ: ไฟล์ต่อไปนี้ "พักไว้ก่อน" ไม่ใช้ในรอบนี้
 #   - wyckoff_stages.csv           -> logic คนละแบบกับ pine_stages, เก็บไว้เผื่ออนาคตแต่ไม่ใช้เป็น stage หลัก

@@ -55,6 +55,8 @@ WYCKOFF_FILE = RESULTS_DIR / "wyckoff_stages.csv"
 PINE_STAGES_FILE = RESULTS_DIR / "pine_stages.csv"
 ACCUM_FILE = RESULTS_DIR / "accumulation_breakout.csv"
 KELL_FILE = RESULTS_DIR / "oliver_kell_signals.csv"
+# Kell 7 ข้อของทุกหุ้นที่คำนวณได้ (รวมตัวไม่ผ่าน) → หน้า /stock/[ticker] · ไม่กระทบ oliver_kell_signals.csv
+KELL_CHECKLIST_FILE = RESULTS_DIR / "kell_checklist.csv"
 VDU_FILE = RESULTS_DIR / "vdu_signals.csv"
 WARRANT_FILE = RESULTS_DIR / "warrant_vs_parent.csv"
 CANSLIM_FILE = RESULTS_DIR / "canslim_result.csv"
