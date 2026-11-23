@@ -226,6 +226,24 @@ jobs:
           sparse-checkout-cone-mode: false
           path: stockdesk_sector_map_check
 
+      - name: Checkout stockdesk NVDR archive (for download_nvdr.py 5-day history)
+        # SET แสดง NVDR แค่วันล่าสุด → download_nvdr.py สร้างประวัติหลายวันใหม่ทุกรอบจาก
+        # stockdesk data/history/<วัน>/nvdr.json (เดิมต่อจาก nvdr_history.csv ใน repo ที่ค้าง 2026-07-21
+        # → ยอด 5 วันปน ก.ค.) · clone แบบ blob:none + sparse เฉพาะ nvdr.json ของ 12 โฟลเดอร์ล่าสุด
+        # (ไม่ดึง history ทั้งก้อน) ไว้ที่ stockdesk_nvdr_check/ ก่อน run_all.py (checkout หลักอยู่หลัง run_all)
+        # ล้ม → job ไม่แดง: download_nvdr.py ไม่เจอไฟล์ → ถอยไปใช้ csv เดิม + ขึ้น failed_steps เอง
+        continue-on-error: true
+        env:
+          PAT: ${{ secrets.DASHBOARD_PAT }}
+        run: |
+          git clone --quiet --depth 1 --filter=blob:none --no-checkout \
+            "https://x-access-token:${PAT}@github.com/lekkung-ai/lekkung-stockdesk.git" stockdesk_nvdr_check
+          cd stockdesk_nvdr_check
+          DAYS=$(git ls-tree -d --name-only HEAD data/history/ | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort | tail -n 12)
+          git sparse-checkout set --no-cone $(printf '%s/nvdr.json\n' $DAYS)
+          git checkout --quiet
+          echo "NVDR archive: $(ls data/history/*/nvdr.json | wc -l) files ($(echo $DAYS | wc -w) folders)"
+
       - name: Run Master Pipeline (all)
         id: run_pipeline
         # ตลาดไม่เปิดวันนี้ (วันหยุด / เสาร์–อาทิตย์) → run_all.py หยุดหลังดาวน์โหลดราคา
