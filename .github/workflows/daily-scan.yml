@@ -422,6 +422,27 @@ jobs:
           # 11. Backfill Sector RS history (time-series Sector & Subsector RS for RRG)
           python -X utf8 scripts/backfill_sector_rs_history.py || echo "backfill_sector_rs_history failed"
 
+      - name: Build daily report (/daily-report)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
+        # สรุปสแกนรายวัน: อ่านไฟล์ที่ step ก่อนหน้าเขียนไว้ (scan_days / diff / report card / history)
+        # แล้วเขียน data/scans/daily_report.json ไฟล์เดียว · ไม่ยิงเน็ต
+        # พังแล้ว job ต้องไม่แดง (ไม่อยู่ใน failed_steps) → ไฟล์เดิมใน stockdesk ยืน, หน้าแสดงแถบ "ข้อมูลของวันที่ …"
+        # commit ไปกับ safe_push --add-all ของ step "Commit and Push to stockdesk" อยู่แล้ว
+        continue-on-error: true
+        working-directory: stockdesk_repo
+        run: |
+          if python -X utf8 scripts/build_daily_report.py; then
+            # archive ลง data/history/<วันของรายงาน>/ เฉพาะเมื่อโฟลเดอร์ของวันนั้นมีอยู่แล้ว (สร้างโดย step Post-process)
+            REPORT_DATE=$(python -c "import json; print(json.load(open('data/scans/daily_report.json', encoding='utf-8'))['date'])")
+            if [ -d "data/history/$REPORT_DATE" ]; then
+              cp data/scans/daily_report.json "data/history/$REPORT_DATE/daily_report.json"
+            else
+              echo "::warning::daily_report: data/history/$REPORT_DATE not found - not archived"
+            fi
+          else
+            echo "::warning::build_daily_report.py failed - daily_report.json not updated"
+          fi
+
       - name: Setup Node (for stockdesk type-check)
         if: steps.run_pipeline.outputs.non_trading != 'true'
         uses: actions/setup-node@v5
