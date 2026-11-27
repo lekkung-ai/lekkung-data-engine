@@ -15,8 +15,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB  # noqa: E402
 
 RS7_CONFIG = {
-    # ── ช่วงดัชนี (SET) — ของแท็บนี้ ไม่แทน market_stage เดิม · ลำดับเมื่อเข้าหลายช่วง: A > C > B
-    #    (B = เพิ่งเด้งจาก low จริงและยังไม่เข้าเงื่อนไข C)
+    # ── ช่วงดัชนี (SET) — ของแท็บนี้ ไม่แทน market_stage เดิม · ลำดับเมื่อเข้าหลายช่วง: A > B > C (ตามสเปก)
     "corr_th": 0.08,              # ดัชนีลงจาก high 252 วัน (ราคาปิด) ≥ 8% = ปรับฐาน
     "near_low": 0.04,             # ช่วง A: ดัชนีห่าง low 126 วันไม่เกิน 4%
     "idx_high_win": 252,
@@ -24,6 +23,7 @@ RS7_CONFIG = {
     "corr_recent_win": 126,       # ช่วง B/C ต้องเคยปรับฐานจริงภายใน 126 วัน
     "phase_b_bsl": [4, 30],       # ช่วง B: แท่งนับจาก low ดัชนี
     "phase_b_ftd_within": 15,     # ... และมี FTD (ของระบบ) ภายใน 15 วัน หลัง low
+    "b_max_near_high": 0.03,      # ... และดัชนียังห่าง high 52 สัปดาห์เกิน 3% (กลับไปใกล้ high แล้ว = ไม่ใช่ช่วง B)
     "phase_c_rally": 0.10,        # ช่วง C: ดัชนี > SMA50 ที่กำลังขึ้น และ (เด้ง ≥ 10% หรือ bsl > 30)
     "phase_c_bsl_gt": 30,
     "phase_c_sma50_rising_bars": 5,

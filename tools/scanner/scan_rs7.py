@@ -138,11 +138,12 @@ def index_features(set_df: pd.DataFrame, cfg: dict = RS7_CONFIG) -> pd.DataFrame
     phase_a = (f["idx_dd"] <= -cfg["corr_th"]) & (c <= f["idx_low"] * (1 + cfg["near_low"]))
     b0, b1 = cfg["phase_b_bsl"]
     phase_b = (f["corr_recent"] & f["bsl"].between(b0, b1)
-               & (f["bars_since_ftd"] <= cfg["phase_b_ftd_within"]) & (f["bars_since_ftd"] < f["bsl"]))
+               & (f["bars_since_ftd"] <= cfg["phase_b_ftd_within"]) & (f["bars_since_ftd"] < f["bsl"])
+               & (f["idx_dd"] <= -cfg["b_max_near_high"]))
     phase_c = (f["corr_recent"] & (c > sma50) & (sma50 > sma50.shift(cfg["phase_c_sma50_rising_bars"]))
                & ((f["rally"] >= cfg["phase_c_rally"]) | (f["bsl"] > cfg["phase_c_bsl_gt"])))
-    # ลำดับ A > C > B: เข้าเงื่อนไขขาขึ้นยืนยันแล้ว (C) ไม่นับเป็นช่วง FTD (B) — B เหลือเฉพาะตอนเพิ่งเด้งจาก low จริง
-    f["phase"] = np.where(phase_a, "A", np.where(phase_c, "C", np.where(phase_b, "B", "-")))
+    # ลำดับตามสเปก A > B > C · B ต้องยังห่าง high (b_max_near_high) → ดัชนีกลับไปที่ high แล้วไม่ค้างเป็น B
+    f["phase"] = np.where(phase_a, "A", np.where(phase_b, "B", np.where(phase_c, "C", "-")))
     f["idx_weak"] = (c < sma50) & (c.pct_change(63) <= cfg["sore_idx_ret63"])
     return f
 

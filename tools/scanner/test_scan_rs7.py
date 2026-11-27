@@ -124,12 +124,17 @@ def test_phase_b_after_system_ftd_and_c_in_uptrend():
     assert f.loc["2025-02-28", "phase"] == "A"
 
 
-def test_phase_priority_c_over_b():
-    # ลำดับ A > C > B: 19 ก.พ. 2026 ดัชนีอยู่ที่ high (FTD ของระบบ + เคยปรับฐานใน 126 วัน) → C ไม่ใช่ B
+def test_phase_b_needs_index_away_from_high():
+    # ลำดับ A > B > C (สเปก) + B ต้องห่าง high > b_max_near_high
+    # 19 ก.พ. 2026: FTD ของระบบ + เคยปรับฐานใน 126 วัน แต่ดัชนีอยู่ที่ high → ไม่ใช่ B (เป็น C)
     _, f = _real_phase()
     assert f.loc["2026-02-19", "phase"] == "C" and bool(f.loc["2026-02-19", "ftd"])
     assert f.loc["2026-02-19", "idx_dd"] == 0.0
-    assert f.loc["2025-07-18", "phase"] == "B"                       # ยังเพิ่งเด้งจาก low จริง (FTD 17 ก.ค.)
+    b = f["phase"] == "B"
+    assert (f.loc[b, "idx_dd"] <= -RS7_CONFIG["b_max_near_high"]).all()
+    jul25 = b[(b.index >= "2025-07-01") & (b.index <= "2025-08-31")]
+    assert int(jul25.sum()) >= 8                                     # รอบฟื้นจริง ก.ค. 2025 (FTD 17 ก.ค.)
+    assert f.loc["2025-07-18", "phase"] == "B" and f.loc["2025-07-25", "phase"] == "B"
     assert f["phase"].iloc[-1] == "A"                                # 27 พ.ย. 2026
 
 
