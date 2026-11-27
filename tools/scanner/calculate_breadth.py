@@ -123,7 +123,10 @@ FTD_DD_RULE_TEXT = (
     "FTD (Follow-Through Day): เกิดได้เฉพาะวันที่ {win_start}-{win_end} ของ 'rally attempt' "
     "(วันที่ 1 = วันแรกที่ index ปิดบวกหลังวันก่อนหน้าปิดลบ) โดยวันนั้นต้องปิดบวก >= {ftd_pct}% "
     "ด้วย volume มากกว่าวันก่อนหน้า. rally attempt ถือว่าล้มเหลวและเริ่มนับวันที่ 1 ใหม่ ถ้า close "
-    "หลุดต่ำกว่า low ของวันที่ 1 ก่อนเกิด FTD. หลัง FTD ยืนยันแล้ว จะกลับไปเฝ้าหา rally attempt ใหม่ "
+    "หลุดต่ำกว่า low ของวันที่ 1 ก่อนเกิด FTD. rally attempt หมดอายุเมื่อจบวันที่ {win_end} แล้วยังไม่เกิด FTD: "
+    "ถ้าวันที่ {win_end} ปิดลบ วันปิดบวกถัดไปเป็นวันที่ 1 ของ rally attempt ใหม่ ถ้าปิดบวก/ทรงตัว "
+    "ต้องรอให้ index ปิดลบก่อน 1 วันจึงเริ่มนับใหม่ (วันที่ขึ้นต่อเนื่องหลังหมดอายุยังนับเป็นรอบเดิม). "
+    "หลัง FTD ยืนยันแล้ว จะกลับไปเฝ้าหา rally attempt ใหม่ "
     "อีกครั้งเมื่อ index ปิดลบเป็นวันแรก (pullback ครั้งถัดไป). "
     "หมายเหตุ: เป็นการตีความเกณฑ์ O'Neil แบบย่อของทีมเรา ไม่ใช่สูตรทางการของ IBD "
     "ปรับ threshold ได้ที่ config.py (DD_MIN_DECLINE_PCT / FTD_MIN_GAIN_PCT / FTD_WINDOW_START_DAY / FTD_WINDOW_END_DAY)"
@@ -146,7 +149,17 @@ def compute_ftd_dd(set_df: pd.DataFrame) -> list[str | None]:
     low = set_df["Low"].to_numpy()
     vol = set_df["Volume"].to_numpy()
 
-    state = "searching"  # searching -> counting -> confirmed
+    # searching -> counting -> confirmed | expired
+    #   counting: rally attempt day 1..FTD_WINDOW_END_DAY. Ends early (back to searching) when close
+    #             undercuts the day-1 low.
+    #   expired:  the attempt reached the end of day FTD_WINDOW_END_DAY with no FTD. Without this state the
+    #             attempt never ended in a rising market (stuck in counting from 2025-04, day 393 on
+    #             2026-11-27, so no FTD could ever fire). A new attempt needs a pullback first (O'Neil: a
+    #             rally attempt starts with an up day after a down day), so:
+    #               - day FTD_WINDOW_END_DAY closed down -> searching (the next up close is a new day 1)
+    #               - it closed up/flat -> expired: wait for the first down close, then searching. The days
+    #                 that keep rising right after expiry belong to the old attempt and never start a new one.
+    state = "searching"
     day1_low = None
     day_count = 0
 
@@ -175,7 +188,11 @@ def compute_ftd_dd(set_df: pd.DataFrame) -> list[str | None]:
             ):
                 marker[i] = "FTD"
                 state = "confirmed"
-        elif state == "confirmed":
+            elif day_count >= FTD_WINDOW_END_DAY:
+                state = "searching" if close[i] < close[i - 1] else "expired"
+                day1_low = None
+                day_count = 0
+        elif state in ("confirmed", "expired"):
             if close[i] < close[i - 1]:
                 state = "searching"
 
