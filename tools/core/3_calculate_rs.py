@@ -12,15 +12,8 @@ import pandas as pd
 # 🔌 เชื่อมต่อ config.py
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import HISTORY_DIR, RS_FILE
+from tools.core.rs_score import load_close_series, rs_raw, rs_ratings  # สูตร RS ที่เดียว (scan_rs7 ใช้ร่วม)
 from tools.scanner.utils import iter_stock_files, load_fund_tickers
-
-# IBD-proxy RS: 3/6/9/12-month returns weighted 0.4/0.2/0.2/0.2 (latest
-# quarter counts double). Stocks with less than the full 252 days still get
-# scored on whichever of these periods actually fit, as long as at least the
-# 126-day period is available (below that, exclude entirely).
-PERIODS = [63, 126, 189, 252]
-WEIGHTS = [0.4, 0.2, 0.2, 0.2]
-MIN_DAYS = 126
 
 
 def calculate_rs():
@@ -36,40 +29,10 @@ def calculate_rs():
         ticker = file_path.stem
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                first_line = f.readline()
-            df = pd.read_csv(file_path, header=[0, 1] if "Price" in first_line else 0)
-            if isinstance(df.columns, pd.MultiIndex):
-                close_col = [col for col in df.columns if "Close" in col[0]][0]
-                series = pd.to_numeric(df[close_col], errors="coerce").dropna()
-            else:
-                series = pd.to_numeric(df["Close"], errors="coerce").dropna()
-
-            n = len(series)
-            if n < MIN_DAYS:
+            raw = rs_raw(load_close_series(file_path))
+            if raw is None:
                 continue
-
-            current_close = float(series.iloc[-1])
-
-            # Use whichever lookback periods actually fit in the available
-            # history, renormalizing the remaining weights so they still sum
-            # to 1.0 — keeps RS_raw a fair weighted average regardless of how
-            # many periods a newer listing can supply.
-            weighted_sum = 0.0
-            weight_total = 0.0
-            for period, weight in zip(PERIODS, WEIGHTS):
-                if n < period:
-                    continue
-                c_ago = float(series.iloc[-period])
-                r = (current_close - c_ago) / c_ago
-                weighted_sum += r * weight
-                weight_total += weight
-
-            if weight_total == 0:
-                continue
-
-            rs_raw = weighted_sum / weight_total
-            rs_data.append({"Ticker": ticker, "RS_Raw": rs_raw})
+            rs_data.append({"Ticker": ticker, "RS_Raw": raw})
 
         except Exception:
             continue
@@ -82,11 +45,7 @@ def calculate_rs():
     # กองทุน / REIT (sector_map) ไม่ร่วมจัดอันดับ: RS_Rating = null แต่ยังอยู่ในไฟล์พร้อม RS_Raw
     # (weinstein_stage_analysis.py ใช้รายชื่อในไฟล์นี้เป็น universe)
     is_fund = df_rs["Ticker"].str.upper().isin(load_fund_tickers())
-    # IBD-style 1-99 percentile rank. rank(pct=True) tops out at exactly 1.0
-    # for the single highest-ranked stock, which would land on 100 — clip it
-    # back down to 99 so the whole scale stays 1-99.
-    raw_rating = df_rs.loc[~is_fund, "RS_Raw"].rank(pct=True) * 99 + 1
-    df_rs["RS_Rating"] = raw_rating.round().clip(upper=99).astype("Int64")
+    df_rs["RS_Rating"] = rs_ratings(df_rs["RS_Raw"], is_fund)
     df_rs = df_rs.sort_values(by="RS_Rating", ascending=False, na_position="last")
 
     # 🎯 เซฟไฟล์ RS Ranking

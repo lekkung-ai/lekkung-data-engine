@@ -82,6 +82,43 @@ def rs_passes(rs_rating) -> bool:
         return False
 
 
+def trend_template(df: pd.DataFrame) -> dict:
+    """Trend Template ข้อ 1–7 (cond_1..cond_7) ของแท่งสุดท้ายใน df (Close/High/Low) — กฎเดียวของ TT
+    scan_sepa ใช้กับวันล่าสุด · scan_rs7 เรียกกับ df ที่ตัดถึงแต่ละวันเพื่อได้ TT ย้อนหลัง"""
+    price_series = df["Close"]
+
+    sma_50 = price_series.rolling(window=50).mean()
+    sma_150 = price_series.rolling(window=150).mean()
+    sma_200 = price_series.rolling(window=200).mean()
+
+    current_price = float(price_series.iloc[-1])
+    cur_sma_50 = float(sma_50.iloc[-1])
+    cur_sma_150 = float(sma_150.iloc[-1])
+    cur_sma_200 = float(sma_200.iloc[-1])
+
+    # True 52-week high/low from the day's actual intraday High/Low,
+    # not the closing price - a Close-based max/min is trivially "hit"
+    # by that same day's own Close, which made T7 (near-high) pass far
+    # too often. `current_price` below stays Close-based, since T6/T7
+    # ask "is the current close within X% of the true high/low band".
+    low_52_week = float(df["Low"].iloc[-252:].min())
+    high_52_week = float(df["High"].iloc[-252:].max())
+    sma_200_1m_ago = float(sma_200.iloc[-20])
+
+    cond_1 = (current_price > cur_sma_150) and (current_price > cur_sma_200)
+    cond_2 = cur_sma_150 > cur_sma_200
+    cond_3 = cur_sma_200 > sma_200_1m_ago
+    cond_4 = (cur_sma_50 > cur_sma_150) and (cur_sma_50 > cur_sma_200)
+    cond_5 = current_price > cur_sma_50
+    cond_6 = current_price >= (1.30 * low_52_week)
+    cond_7 = current_price >= (0.75 * high_52_week)
+    return {
+        "price": current_price, "sma_50": cur_sma_50, "sma_150": cur_sma_150, "sma_200": cur_sma_200,
+        "low_52w": low_52_week, "high_52w": high_52_week, "sma_200_1m_ago": sma_200_1m_ago,
+        "conds": [cond_1, cond_2, cond_3, cond_4, cond_5, cond_6, cond_7],
+    }
+
+
 def _r2(x):
     return round(float(x), 2)
 
@@ -162,33 +199,11 @@ def scan_sepa():
             # floor ยังต้อง "โผล่พร้อม flag" ไม่ใช่หายเงียบ (ตัดสินใจที่หน้าเว็บ)
             low_liquidity = adtv_mb < ADTV_MIN_MB
 
-            price_series = df["Close"]
-
-            sma_50 = price_series.rolling(window=50).mean()
-            sma_150 = price_series.rolling(window=150).mean()
-            sma_200 = price_series.rolling(window=200).mean()
-
-            current_price = float(price_series.iloc[-1])
-            cur_sma_50 = float(sma_50.iloc[-1])
-            cur_sma_150 = float(sma_150.iloc[-1])
-            cur_sma_200 = float(sma_200.iloc[-1])
-
-            # True 52-week high/low from the day's actual intraday High/Low,
-            # not the closing price - a Close-based max/min is trivially "hit"
-            # by that same day's own Close, which made T7 (near-high) pass far
-            # too often. `current_price` below stays Close-based, since T6/T7
-            # ask "is the current close within X% of the true high/low band".
-            low_52_week = float(df["Low"].iloc[-252:].min())
-            high_52_week = float(df["High"].iloc[-252:].max())
-            sma_200_1m_ago = float(sma_200.iloc[-20])
-
-            cond_1 = (current_price > cur_sma_150) and (current_price > cur_sma_200)
-            cond_2 = cur_sma_150 > cur_sma_200
-            cond_3 = cur_sma_200 > sma_200_1m_ago
-            cond_4 = (cur_sma_50 > cur_sma_150) and (cur_sma_50 > cur_sma_200)
-            cond_5 = current_price > cur_sma_50
-            cond_6 = current_price >= (1.30 * low_52_week)
-            cond_7 = current_price >= (0.75 * high_52_week)
+            tt = trend_template(df)
+            current_price, cur_sma_50, cur_sma_150, cur_sma_200 = (
+                tt["price"], tt["sma_50"], tt["sma_150"], tt["sma_200"])
+            low_52_week, high_52_week, sma_200_1m_ago = tt["low_52w"], tt["high_52w"], tt["sma_200_1m_ago"]
+            cond_1, cond_2, cond_3, cond_4, cond_5, cond_6, cond_7 = tt["conds"]
 
             # sepa_checklist: คำนวณจากค่าชุดเดียวกับด้านล่าง · error ตรงนี้ต้องไม่กระทบแถว SEPA
             try:

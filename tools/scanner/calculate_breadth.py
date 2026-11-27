@@ -143,8 +143,15 @@ BREADTH_MIN_DAY_SHARE = 0.5
 
 
 def compute_ftd_dd(set_df: pd.DataFrame) -> list[str | None]:
+    return compute_ftd_dd_detail(set_df)[0]
+
+
+def compute_ftd_dd_detail(set_df: pd.DataFrame) -> tuple[list[str | None], list[int]]:
+    """(marker, rally_day) · rally_day[i] = วันที่เท่าไรของ rally attempt ณ แท่ง i (0 = ไม่อยู่ในช่วงนับ)
+    — วันที่เกิด FTD คือ rally_day ของแท่งนั้น · scan_rs7 ใช้ฟังก์ชันนี้ (FTD ชุดเดียวของระบบ)"""
     n = len(set_df)
     marker: list[str | None] = [None] * n
+    rally_day: list[int] = [0] * n
     close = set_df["Close"].to_numpy()
     low = set_df["Low"].to_numpy()
     vol = set_df["Volume"].to_numpy()
@@ -175,8 +182,10 @@ def compute_ftd_dd(set_df: pd.DataFrame) -> list[str | None]:
                 state = "counting"
                 day1_low = low[i]
                 day_count = 1
+                rally_day[i] = 1
         elif state == "counting":
             day_count += 1
+            rally_day[i] = day_count
             if close[i] < day1_low:
                 state = "searching"
                 day1_low = None
@@ -196,7 +205,7 @@ def compute_ftd_dd(set_df: pd.DataFrame) -> list[str | None]:
             if close[i] < close[i - 1]:
                 state = "searching"
 
-    return marker
+    return marker, rally_day
 
 
 # ─── Breadth stats (%เหนือ MA, %52W high/low ใหม่) ─────────────────────────────
