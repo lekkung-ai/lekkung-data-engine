@@ -141,7 +141,8 @@ def index_features(set_df: pd.DataFrame, cfg: dict = RS7_CONFIG) -> pd.DataFrame
                & (f["bars_since_ftd"] <= cfg["phase_b_ftd_within"]) & (f["bars_since_ftd"] < f["bsl"]))
     phase_c = (f["corr_recent"] & (c > sma50) & (sma50 > sma50.shift(cfg["phase_c_sma50_rising_bars"]))
                & ((f["rally"] >= cfg["phase_c_rally"]) | (f["bsl"] > cfg["phase_c_bsl_gt"])))
-    f["phase"] = np.where(phase_a, "A", np.where(phase_b, "B", np.where(phase_c, "C", "-")))
+    # ลำดับ A > C > B: เข้าเงื่อนไขขาขึ้นยืนยันแล้ว (C) ไม่นับเป็นช่วง FTD (B) — B เหลือเฉพาะตอนเพิ่งเด้งจาก low จริง
+    f["phase"] = np.where(phase_a, "A", np.where(phase_c, "C", np.where(phase_b, "B", "-")))
     f["idx_weak"] = (c < sma50) & (c.pct_change(63) <= cfg["sore_idx_ret63"])
     return f
 
@@ -324,7 +325,8 @@ def stock_frame(df: pd.DataFrame, f: pd.DataFrame, rsr: pd.Series, cfg: dict = R
         if post_low >= base_low:
             squat = np.nanmin(C[k:i + 1]) <= piv * (1 - cfg["piv_squat"])
             if (age <= pa1 and squat and T10[i] <= cfg["piv_tight10"] and C[i] >= cfg["piv_floor"] * piv
-                    and C[i] > SMA50[i] and rs_up):
+                    and C[i] > SMA50[i] and rs_up
+                    and RR[i] >= cfg["piv_min_rs_rating"] and DIST[i] >= -cfg["piv_max_dist"]):
                 reclaim = C[i] > piv and V[i] >= cfg["vol_mult"] * VAVG[i]
                 fail_st[i] = "PIVOT_RECLAIM" if reclaim else "PIVOT_RESET"
                 info7[i] = {"type": "pivot", **common,

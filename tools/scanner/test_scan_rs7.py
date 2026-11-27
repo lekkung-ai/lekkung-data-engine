@@ -124,6 +124,15 @@ def test_phase_b_after_system_ftd_and_c_in_uptrend():
     assert f.loc["2025-02-28", "phase"] == "A"
 
 
+def test_phase_priority_c_over_b():
+    # ลำดับ A > C > B: 19 ก.พ. 2026 ดัชนีอยู่ที่ high (FTD ของระบบ + เคยปรับฐานใน 126 วัน) → C ไม่ใช่ B
+    _, f = _real_phase()
+    assert f.loc["2026-02-19", "phase"] == "C" and bool(f.loc["2026-02-19", "ftd"])
+    assert f.loc["2026-02-19", "idx_dd"] == 0.0
+    assert f.loc["2025-07-18", "phase"] == "B"                       # ยังเพิ่งเด้งจาก low จริง (FTD 17 ก.ค.)
+    assert f["phase"].iloc[-1] == "A"                                # 27 พ.ย. 2026
+
+
 # ───────────────────────────────────────────── 1 Predictive
 def _pred_setup():
     c = tight_base()
@@ -233,7 +242,7 @@ def _breakout_then(after, n=N, k=None, vol_k=3_000_000):
     return c, v, k
 
 
-def test_pivot_reset_then_reclaim():
+def _pivot_reset_case():
     after = [101, 98, 96, 96.5] + [97.0, 98.0] * 8               # ตบกลับใต้ pivot ≥ 3% แต่ไม่หลุดฐาน (96)
     c, v, k = _breakout_then(after)
     df = stock(c, v, spread=0.002)
@@ -241,12 +250,26 @@ def test_pivot_reset_then_reclaim():
     df.iloc[k + 1:, df.columns.get_loc("Low")] = df["Close"].iloc[k + 1:] * 0.999
     f = index_frame(df, np.full(N, 100.0), phase="A", bsl=0)
     f["idx"] = path([(0, 100), (N - 30, 100), (N - 1, 90)])       # RS ขึ้นเทียบ 20 วันก่อน
+    return df, f
+
+
+def test_pivot_reset_then_reclaim():
+    df, f = _pivot_reset_case()
     assert status(df, f, pid=7) == "PIVOT_RESET"
     df2 = df.copy()
     df2.iloc[-1, df2.columns.get_loc("Close")] = 101.0
     df2.iloc[-1, df2.columns.get_loc("High")] = 101.3
     df2.iloc[-1, df2.columns.get_loc("Volume")] = 3_000_000
     assert status(df2, f, pid=7) == "PIVOT_RECLAIM"
+
+
+def test_pivot_reset_filtered_by_rs_rating_and_distance():
+    df, f = _pivot_reset_case()
+    assert status(df, f, rating=RS7_CONFIG["piv_min_rs_rating"] - 1, pid=7) == ""   # กรณี PR9/PTG/BDMS
+    assert status(df, f, rating=RS7_CONFIG["piv_min_rs_rating"], pid=7) == "PIVOT_RESET"
+    far = df.copy()
+    far.iloc[-100, far.columns.get_loc("High")] = 140.0              # high 52 สัปดาห์ไกล → ห่าง high > 25%
+    assert status(far, f, pid=7) == ""
 
 
 def _base_reset_case():

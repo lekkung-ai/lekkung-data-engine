@@ -15,7 +15,8 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from config import ADTV_MIN_MB  # noqa: E402
 
 RS7_CONFIG = {
-    # ── ช่วงดัชนี (SET) — ของแท็บนี้ ไม่แทน market_stage เดิม
+    # ── ช่วงดัชนี (SET) — ของแท็บนี้ ไม่แทน market_stage เดิม · ลำดับเมื่อเข้าหลายช่วง: A > C > B
+    #    (B = เพิ่งเด้งจาก low จริงและยังไม่เข้าเงื่อนไข C)
     "corr_th": 0.08,              # ดัชนีลงจาก high 252 วัน (ราคาปิด) ≥ 8% = ปรับฐาน
     "near_low": 0.04,             # ช่วง A: ดัชนีห่าง low 126 วันไม่เกิน 4%
     "idx_high_win": 252,
@@ -58,6 +59,7 @@ RS7_CONFIG = {
     "rest_dist": 0.15, "rest_rsgap": [-0.15, -0.03],
     # ── 7 Failure reset — Pivot reset / Base reset
     "piv_bo_age": [3, 40], "piv_squat": 0.03, "piv_base_win": 20, "piv_tight10": 0.10, "piv_floor": 0.93,
+    "piv_min_rs_rating": 70, "piv_max_dist": 0.25,     # ตัวกรองเดียวกับ Base reset (ผู้ใช้ตัดสิน 2026-11-27)
     "base_bo_lookback": 90, "base_min_days": 15, "base_win": 15, "base_tight15": 0.12,
     "base_min_rs_rating": 70, "base_max_dist": 0.25,   # ตัวกรองที่ผู้ใช้เพิ่ม (กันหุ้นอย่าง MTC)
     "rs_up_bars": 20,
