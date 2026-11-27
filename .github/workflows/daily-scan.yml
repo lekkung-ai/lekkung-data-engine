@@ -341,6 +341,17 @@ jobs:
             echo "Not Monday ($TODAY_DOW) - skipping universe check."
           fi
 
+      - name: RS-7 scan (rs7.json)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
+        # แท็บ RS Leaders (Minervini 7): อ่านไฟล์ในเครื่องเท่านั้น — data/history (cache เดิม) + SET_INDEX.csv
+        # + rs_ranking.csv + pine_stages.csv + sector_map (stockdesk_sector_map_check) · ไม่ดึงข้อมูลภายนอก
+        # เขียน data/results/output/rs7.json → step Copy JSON ถัดไป (cp *.json) พาไป stockdesk เอง
+        # ไม่อยู่ใน run_all.py → ไม่เข้า failed_steps · พังแล้ว job ต้องไม่แดง: ไม่มีไฟล์ใหม่ = stockdesk เก็บ rs7.json เดิม
+        # (คำนวณพังบางส่วน → สคริปต์ยังเขียนไฟล์ + warnings[] และ exit 0)
+        continue-on-error: true
+        timeout-minutes: 10
+        run: python -X utf8 tools/scanner/scan_rs7.py
+
       - name: Copy JSON to stockdesk
         if: steps.run_pipeline.outputs.non_trading != 'true'
         run: |
@@ -379,6 +390,8 @@ jobs:
           # อย่างเดียว ไม่มีใครอ่านฉบับย้อนหลัง → ไม่เก็บลง archive (เหตุผลเดียวกับ topmover_charts)
           rm -f stockdesk_repo/data/history/$DATESTAMP/sepa_checklist.json
           rm -f stockdesk_repo/data/history/$DATESTAMP/kell_checklist.json  # Kell 7 ข้อของทุกหุ้น — เหตุผลเดียวกับ sepa_checklist
+          # rs7.json มีซีรีส์ย้อนหลัง 252 วันในไฟล์อยู่แล้ว (คิดใหม่ทั้งชุดทุกวันจาก history) → ไม่ต้องเก็บรายวัน
+          rm -f stockdesk_repo/data/history/$DATESTAMP/rs7.json
 
           cd stockdesk_repo
           # Update index.json
