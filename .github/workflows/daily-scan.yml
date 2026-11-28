@@ -372,6 +372,18 @@ jobs:
         timeout-minutes: 10
         run: python -X utf8 tools/scanner/report_card_events.py --stockdesk-dir stockdesk_repo
 
+      - name: Overview v2 (overview.json)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
+        # หน้า / ของ stockdesk: ไฟสัญญาณ · Strength/Weakness รายกลุ่ม · หุ้นผู้นำ · volume เทียบเฉลี่ย 50 วัน · scanner Δ
+        # อ่านไฟล์ในเครื่องเท่านั้น — data/history (cache เดิม) + SET_INDEX.csv + data/results/output/*.json ของรอบนี้
+        # + stockdesk_repo (sector_map, public/data/capital_events.json, data/history/<วันทำการก่อนหน้า>) · ไม่ดึงข้อมูลภายนอก
+        # เขียน data/results/output/overview.json (atomic) → step Copy JSON (cp *.json) พาไป stockdesk · H6 ตรวจ generated_at เอง
+        # ไม่อยู่ใน run_all.py → ไม่เข้า failed_steps · พังแล้ว job ต้องไม่แดง: ไม่มีไฟล์ใหม่ = stockdesk เก็บไฟล์เดิม
+        # (บางส่วนพัง → ส่วนนั้นเป็น null + errors[] และ exit 0)
+        continue-on-error: true
+        timeout-minutes: 10
+        run: python -X utf8 tools/scanner/build_overview.py --stockdesk-dir stockdesk_repo
+
       - name: Copy JSON to stockdesk
         if: steps.run_pipeline.outputs.non_trading != 'true'
         run: |
