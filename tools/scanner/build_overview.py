@@ -202,7 +202,8 @@ def build_groups(m: dict, t2s: dict, set_chg: float, set_perf5: float, leader_se
                      "up": up, "down": down,
                      "med5_vs_set": _r(median(p5) - set_perf5) if p5 and np.isfinite(set_perf5) else None,
                      "status": status, "top4": [cell(p) for p in srt[:G["top_n"]]],
-                     "bot4": [cell(p) for p in srt[::-1][:G["top_n"]]]})
+                     # bot4 ไม่ซ้ำ top4 (กลุ่มเล็ก < 8 ตัว → bot4 สั้นลง)
+                     "bot4": [cell(p) for p in srt[::-1][:max(0, min(G["top_n"], len(xs) - G["top_n"]))]]})
     rows.sort(key=lambda r: (-r["med_vs_set"], r["g"]))
     skipped.sort(key=lambda r: (-r["n"], r["g"]))
     return {"filter": {k: G[k] for k in ("member_val20_min_mb", "member_need_volume", "min_members")},

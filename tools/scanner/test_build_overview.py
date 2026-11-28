@@ -175,6 +175,7 @@ def test_groups_strength_weakness_skipped_and_mai_name():
     assert ec["med_vs_set"] == 1.75 and ec["up"] == 5 and ec["down"] == 1 and ec["med5_vs_set"] == 1.0
     assert ec["top4"][0] == {"t": "E5", "chg": 4.0, "leader": True}
     assert ec["bot4"][0]["t"] == "E4"
+    assert len(ec["bot4"]) == 2 and not {c["t"] for c in ec["bot4"]} & {c["t"] for c in ec["top4"]}  # 6 ตัว: ไม่ซ้ำ
     assert next(r for r in g["rows"] if r["g"] == "mai · Technology")["market"] == "mai"
 
 
