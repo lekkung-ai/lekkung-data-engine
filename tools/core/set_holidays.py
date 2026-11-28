@@ -12,7 +12,7 @@ earnings-evening.yml / iaa-research-morning.yml (holiday_gate) ใช้ข้�
 (ดีกว่าเงียบ) และข้อความบอกว่ายังไม่มีรายการปีนั้น
 """
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Dict, FrozenSet, Optional, Tuple
 
 _HOLIDAYS: Dict[int, FrozenSet[date]] = {
@@ -50,6 +50,19 @@ SPECIAL: Dict[date, str] = {
 
 def is_set_holiday(d: date) -> bool:
     return d in _HOLIDAYS.get(d.year, frozenset()) or d in SPECIAL
+
+
+def is_trading_day(d: date) -> bool:
+    """วันจันทร์–ศุกร์ที่ไม่อยู่ในรายการวันหยุด SET (ปีที่ยังไม่มีรายการ = กรองแค่เสาร์–อาทิตย์)"""
+    return d.weekday() < 5 and not is_set_holiday(d)
+
+
+def previous_trading_day(d: date) -> date:
+    """วันทำการ SET ก่อนหน้า d (ไม่รวม d) — ข้ามเสาร์–อาทิตย์ + วันหยุดในรายการ"""
+    p = d - timedelta(days=1)
+    while not is_trading_day(p):
+        p -= timedelta(days=1)
+    return p
 
 
 def has_calendar(year: int) -> bool:
