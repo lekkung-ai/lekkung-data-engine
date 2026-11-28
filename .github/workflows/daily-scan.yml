@@ -362,6 +362,16 @@ jobs:
         timeout-minutes: 10
         run: python -X utf8 tools/scanner/scan_luk.py
 
+      - name: Report card events (RS-7 + Martin Luk)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
+        # Report Card แบบเหตุการณ์ (แยกจาก report_card.json เดิม): อ่าน data/history (cache เดิม) + SET_INDEX.csv
+        # + stockdesk_repo/data/history/*/{rs7,luk}_hits.json + data/backfill/*_hits_backfill.json + hits ของวันนี้ใน output/
+        # → data/results/output/report_card_events.json → step Copy JSON พาไป stockdesk · ไม่ดึงข้อมูลภายนอก
+        # ไม่อยู่ใน run_all.py → ไม่เข้า failed_steps · พังแล้ว job ต้องไม่แดง (stockdesk เก็บไฟล์เดิม)
+        continue-on-error: true
+        timeout-minutes: 10
+        run: python -X utf8 tools/scanner/report_card_events.py --stockdesk-dir stockdesk_repo
+
       - name: Copy JSON to stockdesk
         if: steps.run_pipeline.outputs.non_trading != 'true'
         run: |
@@ -405,6 +415,8 @@ jobs:
           # luk.json = ไฟล์ปัจจุบันของหน้า /luk เท่านั้น → ไม่เก็บรายวัน
           # (rs7_hits.json / luk_hits.json ~1 KB เก็บรายวันตาม cp ด้านบน สำหรับ Report Card)
           rm -f stockdesk_repo/data/history/$DATESTAMP/luk.json
+          # report_card_events.json คิดใหม่ทั้งชุดทุกวันจาก hits → ไม่เก็บรายวัน
+          rm -f stockdesk_repo/data/history/$DATESTAMP/report_card_events.json
 
           cd stockdesk_repo
           # Update index.json
