@@ -1,0 +1,94 @@
+name: Backfill RS-7 / Luk hits (one-off)
+
+# สร้าง rs7_hits / luk_hits ย้อนหลังแบบ point-in-time ครั้งเดียว (ผู้ใช้กดเองใน Actions → Run workflow)
+# เขียนเฉพาะ stockdesk data/backfill/rs7_hits_backfill.json และ data/backfill/luk_hits_backfill.json
+# (ไม่แตะ data/history / data/scans) · รันซ้ำได้ = เขียนทับ 2 ไฟล์ · Report Card แบบเหตุการณ์ใช้ backfill เฉพาะวันก่อน
+# hits จริงวันแรก · OHLCV มาจาก cache ของ daily-scan แบบ restore อย่างเดียว (ไม่ save cache) · ไม่ดึงข้อมูลภายนอก
+on:
+  workflow_dispatch:
+    inputs:
+      date_from:
+        description: 'วันเริ่ม (YYYY-MM-DD) · ว่าง = เท่าที่ข้อมูลพอ (RS-7 ต้องมี SET 252 แท่ง · Luk ต้องมี RS Rating)'
+        required: false
+        default: ''
+      date_to:
+        description: 'วันสุดท้าย (YYYY-MM-DD) · ว่าง = วันทำการล่าสุดใน cache'
+        required: false
+        default: ''
+
+# กลุ่มเดียวกับ daily-scan → ไม่รันซ้อนกับสแกนรายวัน (คิวรอกัน ไม่ยกเลิกตัวที่รันอยู่)
+concurrency:
+  group: daily-scan
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout data_engine repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore history cache (read-only)
+        # restore อย่างเดียว: key เดียวกับ daily-scan · ใช้ cache ล่าสุดตาม prefix · ไม่มี step save
+        id: history
+        uses: actions/cache/restore@v5
+        with:
+          path: data/history
+          key: history-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            history-${{ runner.os }}-
+
+      - name: Stop if no history cache
+        if: steps.history.outputs.cache-matched-key == ''
+        run: |
+          echo "::error::ไม่พบ cache data/history ของ daily-scan — รัน daily-scan ให้สำเร็จก่อนแล้วค่อยกด backfill"
+          exit 1
+
+      - name: Checkout stockdesk sector_map (funds/REITs + subsector)
+        uses: actions/checkout@v6
+        with:
+          repository: lekkung-ai/lekkung-stockdesk
+          token: ${{ secrets.DASHBOARD_PAT }}
+          sparse-checkout: |
+            data/scans/sector_map.json
+          sparse-checkout-cone-mode: false
+          path: stockdesk_sector_map_check
+
+      - name: Build backfill files
+        env:
+          DATE_FROM: ${{ github.event.inputs.date_from }}
+          DATE_TO: ${{ github.event.inputs.date_to }}
+        run: |
+          ARGS=""
+          if [ -n "$DATE_FROM" ]; then ARGS="$ARGS --from $DATE_FROM"; fi
+          if [ -n "$DATE_TO" ]; then ARGS="$ARGS --to $DATE_TO"; fi
+          python -X utf8 tools/scanner/backfill_hits.py --out-dir backfill_out $ARGS
+          ls -la backfill_out
+
+      - name: Checkout stockdesk repository
+        uses: actions/checkout@v6
+        with:
+          repository: lekkung-ai/lekkung-stockdesk
+          token: ${{ secrets.DASHBOARD_PAT }}
+          path: stockdesk_repo
+
+      - name: Commit and push the 2 backfill files only
+        run: |
+          mkdir -p stockdesk_repo/data/backfill
+          cp backfill_out/rs7_hits_backfill.json stockdesk_repo/data/backfill/rs7_hits_backfill.json
+          cp backfill_out/luk_hits_backfill.json stockdesk_repo/data/backfill/luk_hits_backfill.json
+          cd stockdesk_repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python scripts/safe_push.py --repo . --message "Backfill RS-7 / Luk hits (point-in-time)" \
+            --add data/backfill/rs7_hits_backfill.json data/backfill/luk_hits_backfill.json
