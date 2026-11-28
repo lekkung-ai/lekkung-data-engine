@@ -531,6 +531,24 @@ def hits_from(out: dict) -> dict:
             "phase": (out.get("phase") or {}).get("today"), "fields": HITS_FIELDS, "rows": rows}
 
 
+def hit_row(t: str, o: pd.DataFrame, k: int) -> list | None:
+    """แถว rs7_hits ของหุ้น t ที่แท่ง k ของ stock_frame (None = ไม่มีรูปแบบวันนั้น) — ค่าเดียวกับ hits_from(stock_record)
+    · backfill_hits.py ใช้สร้างย้อนหลังทีละวัน"""
+    row = o.iloc[k]
+    pats = [[pid, row[f"p{pid}"]] for pid in PATTERNS if row[f"p{pid}"]]
+    if not pats:
+        return None
+    info = row["info7"] if isinstance(row["info7"], dict) else {}
+    rr = row["rs_rating"]
+    return [t, pats, _r(row["close"], 3), None if pd.isna(rr) else int(rr), _r(row["pivot"], 3),
+            info.get("old_pivot"), info.get("new_base_high")]
+
+
+def hit_rows_sorted(rows: list[list]) -> list[list]:
+    """ลำดับเดียวกับ stocks ของ rs7.json: รูปแบบเลขน้อยสุดก่อน แล้ว RS Rating มาก→น้อย (เสถียรตามลำดับไฟล์)"""
+    return sorted(rows, key=lambda r: (min(p[0] for p in r[1]), -(r[3] or 0)))
+
+
 def write_json(out: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")

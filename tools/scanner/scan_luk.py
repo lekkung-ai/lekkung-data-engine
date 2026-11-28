@@ -323,6 +323,69 @@ def load_rs_ratings(rs_file: Path) -> dict:
 
 
 # ─────────────────────────────────────────────────────────── build
+def evaluate_day(arrays: dict, rs: dict, set_close: pd.Series, t2s: dict, cfg: dict = LUK_CONFIG,
+                 errors: list | None = None, warnings: list | None = None) -> dict:
+    """ผลของ "วันเดียว" — arrays = {ticker: (stock_arrays, i)} ของหุ้นที่มีแท่งวันนั้น (ลำดับ = ลำดับไฟล์) ·
+    rs = RS Rating ของวันนั้น · set_close = SET ถึงวันนั้น · คืน funnel / leaders / regime / candidates / weak /
+    counts / theme_alerts · scan_luk.build (วันล่าสุด) และ backfill_hits.py (ย้อนหลังทีละวัน) ใช้ตัวนี้ตัวเดียว"""
+    errors = [] if errors is None else errors
+    warnings = [] if warnings is None else warnings
+    passed = []
+    funnel = {"universe": 0, "price": 0, "value20": 0, "adr": 0}
+    for t, (x, i) in arrays.items():
+        try:
+            funnel["universe"] += 1
+            f = passes_filters(x, i, cfg)
+            for k in ("price", "value20", "adr"):
+                funnel[k] += int(f[k])
+            if f["adr"]:
+                passed.append(t)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{t}:{type(e).__name__}")
+
+    # ── ผู้นำ Top N ตาม RS Rating ของระบบ
+    ranked = sorted((t for t in passed if t in rs), key=lambda t: (-rs[t], t))
+    leaders = ranked[:cfg["leader_top_n"]]
+    rank = {t: k + 1 for k, t in enumerate(leaders)}
+    leader_rows = [{"symbol": t, "rank": rank[t], "rs_rating": rs[t], "close": _r(arrays[t][0]["c"][arrays[t][1]], 3),
+                    "above_ema21": bool(arrays[t][0]["c"][arrays[t][1]] > arrays[t][0]["e21"][arrays[t][1]])}
+                   for t in leaders]
+    try:
+        reg = regime([arrays[t] for t in leaders], set_close, cfg)
+    except Exception as e:  # noqa: BLE001
+        reg = {}
+        warnings.append(f"regime: ({type(e).__name__}: {e})")
+    risk = reg.get("suggested_risk_pct", cfg["risk_pct"] * cfg["reg_half_risk_mult"])
+
+    cands, weak = [], []
+    for t in passed:
+        x, i = arrays[t]
+        for name, fn in SETUP_FUNCS.items():
+            if name == "LONG_PULLBACK" and t not in rank:
+                continue
+            try:
+                r = fn(x, i, cfg)
+            except (IndexError, ZeroDivisionError, ValueError) as e:
+                errors.append(f"{t}/{name}:{type(e).__name__}")
+                r = None
+            if not r:
+                continue
+            info = t2s.get(t) or {}
+            r = {"symbol": t, **r, "rs_rating": rs.get(t), "leader_rank": rank.get(t),
+                 "sector": info.get("sector"), "subsector": info.get("subsector") or None}
+            if r["side"] == "long":
+                r.update(long_risk(x["c"][i], x["h"][i], x["l"][i], risk, cfg))
+                cands.append(r)
+            else:
+                weak.append({k: r[k] for k in ("symbol", "setup", "score", "close", "ref_level", "ref_name",
+                                               "dist_ref_adr", "perf_1m", "rs_rating", "sector", "subsector", "note")})
+    cands.sort(key=lambda r: (LONG_SETUPS.index(r["setup"]), -(r["score"] or 0)))
+    weak.sort(key=lambda r: (WEAK_SETUPS.index(r["setup"]), -(r["score"] or 0)))
+    return {"regime": reg, "funnel": funnel, "leaders": leader_rows, "candidates": cands, "weak": weak,
+            "counts": {s: sum(1 for r in cands + weak if r["setup"] == s) for s in LONG_SETUPS + WEAK_SETUPS},
+            "theme_alerts": theme_alerts(cands, cfg)}
+
+
 def build(history_dir: Path, set_index_file: Path, rs_file: Path, cfg: dict = LUK_CONFIG, log=print) -> dict:
     t0 = time.time()
     warnings: list[str] = []
@@ -372,70 +435,19 @@ def build(history_dir: Path, set_index_file: Path, rs_file: Path, cfg: dict = LU
         as_of = min(as_of, stock_as_of)
     out["as_of"] = _d(as_of)
 
-    # ── funnel + arrays ของหุ้นที่มีแท่งวันนี้
-    arrays, passed = {}, []
-    funnel = {"universe": 0, "price": 0, "value20": 0, "adr": 0}
+    # ── arrays ของหุ้นที่มีแท่งวันนี้ แล้วประเมินวันนี้ (evaluate_day ใช้ร่วมกับ backfill_hits.py)
+    arrays = {}
     for t, df in data.items():
         try:
             df = df[df.index <= as_of]
             if df.index[-1] != as_of or len(df) < cfg["min_bars"]:
                 continue
-            x = stock_arrays(df, cfg)
-            i = len(df) - 1
-            funnel["universe"] += 1
-            f = passes_filters(x, i, cfg)
-            for k in ("price", "value20", "adr"):
-                funnel[k] += int(f[k])
-            arrays[t] = (x, i)
-            if f["adr"]:
-                passed.append(t)
+            arrays[t] = (stock_arrays(df, cfg), len(df) - 1)
         except Exception as e:  # noqa: BLE001
             errors.append(f"{t}:{type(e).__name__}")
-    out["funnel"] = funnel
-
-    # ── ผู้นำ Top N ตาม RS Rating ของระบบ
-    ranked = sorted((t for t in passed if t in rs), key=lambda t: (-rs[t], t))
-    leaders = ranked[:cfg["leader_top_n"]]
-    rank = {t: k + 1 for k, t in enumerate(leaders)}
-    out["leaders"] = [{"symbol": t, "rank": rank[t], "rs_rating": rs[t], "close": _r(arrays[t][0]["c"][arrays[t][1]], 3),
-                       "above_ema21": bool(arrays[t][0]["c"][arrays[t][1]] > arrays[t][0]["e21"][arrays[t][1]])}
-                      for t in leaders]
-
-    try:
-        reg = regime([arrays[t] for t in leaders], set_df["Close"][set_df.index <= as_of], cfg)
-    except Exception as e:  # noqa: BLE001
-        reg = {}
-        warnings.append(f"regime: ({type(e).__name__}: {e})")
-    out["regime"] = reg
-    risk = reg.get("suggested_risk_pct", cfg["risk_pct"] * cfg["reg_half_risk_mult"])
-
-    cands, weak = [], []
-    for t in passed:
-        x, i = arrays[t]
-        for name, fn in SETUP_FUNCS.items():
-            if name == "LONG_PULLBACK" and t not in rank:
-                continue
-            try:
-                r = fn(x, i, cfg)
-            except (IndexError, ZeroDivisionError, ValueError) as e:
-                errors.append(f"{t}/{name}:{type(e).__name__}")
-                r = None
-            if not r:
-                continue
-            info = t2s.get(t) or {}
-            r = {"symbol": t, **r, "rs_rating": rs.get(t), "leader_rank": rank.get(t),
-                 "sector": info.get("sector"), "subsector": info.get("subsector") or None}
-            if r["side"] == "long":
-                r.update(long_risk(x["c"][i], x["h"][i], x["l"][i], risk, cfg))
-                cands.append(r)
-            else:
-                weak.append({k: r[k] for k in ("symbol", "setup", "score", "close", "ref_level", "ref_name",
-                                               "dist_ref_adr", "perf_1m", "rs_rating", "sector", "subsector", "note")})
-    cands.sort(key=lambda r: (LONG_SETUPS.index(r["setup"]), -(r["score"] or 0)))
-    weak.sort(key=lambda r: (WEAK_SETUPS.index(r["setup"]), -(r["score"] or 0)))
-    out["candidates"], out["weak"] = cands, weak
-    out["counts"] = {s: sum(1 for r in cands + weak if r["setup"] == s) for s in LONG_SETUPS + WEAK_SETUPS}
-    out["theme_alerts"] = theme_alerts(cands, cfg)
+    day = evaluate_day(arrays, rs, set_df["Close"][set_df.index <= as_of], t2s, cfg, errors, warnings)
+    out.update(day)
+    reg, funnel, leaders = day["regime"], day["funnel"], day["leaders"]
     if errors:
         warnings.append(f"คำนวณไม่ได้ {len(errors)} รายการ: {', '.join(errors[:10])}")
     log(f"  Luk: as_of {out['as_of']} · regime {reg.get('mode')} · funnel {funnel} · leaders {len(leaders)} · "
