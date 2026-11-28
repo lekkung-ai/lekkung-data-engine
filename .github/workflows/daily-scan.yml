@@ -352,6 +352,16 @@ jobs:
         timeout-minutes: 10
         run: python -X utf8 tools/scanner/scan_rs7.py
 
+      - name: Martin Luk scan (luk.json)
+        if: steps.run_pipeline.outputs.non_trading != 'true'
+        # แท็บ Martin Luk (SET): อ่านไฟล์ในเครื่องเท่านั้น — data/history (cache เดิม) + SET_INDEX.csv + rs_ranking.csv
+        # + sector_map (stockdesk_sector_map_check) · ไม่ดึง TradingView/Yahoo
+        # เขียน data/results/output/luk.json + luk_hits.json → step Copy JSON (cp *.json) พาไป stockdesk เอง
+        # ไม่อยู่ใน run_all.py → ไม่เข้า failed_steps · พังแล้ว job ต้องไม่แดง: ไม่มีไฟล์ใหม่ = stockdesk เก็บไฟล์เดิม
+        continue-on-error: true
+        timeout-minutes: 10
+        run: python -X utf8 tools/scanner/scan_luk.py
+
       - name: Copy JSON to stockdesk
         if: steps.run_pipeline.outputs.non_trading != 'true'
         run: |
@@ -392,6 +402,9 @@ jobs:
           rm -f stockdesk_repo/data/history/$DATESTAMP/kell_checklist.json  # Kell 7 ข้อของทุกหุ้น — เหตุผลเดียวกับ sepa_checklist
           # rs7.json มีซีรีส์ย้อนหลัง 252 วันในไฟล์อยู่แล้ว (คิดใหม่ทั้งชุดทุกวันจาก history) → ไม่ต้องเก็บรายวัน
           rm -f stockdesk_repo/data/history/$DATESTAMP/rs7.json
+          # luk.json = ไฟล์ปัจจุบันของหน้า /luk เท่านั้น → ไม่เก็บรายวัน
+          # (rs7_hits.json / luk_hits.json ~1 KB เก็บรายวันตาม cp ด้านบน สำหรับ Report Card)
+          rm -f stockdesk_repo/data/history/$DATESTAMP/luk.json
 
           cd stockdesk_repo
           # Update index.json
