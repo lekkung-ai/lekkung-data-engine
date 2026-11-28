@@ -310,6 +310,20 @@ def test_build_never_crashes_on_missing_set_index(tmp_path):
     assert (tmp_path / "rs7.json").exists()
 
 
+def test_rs7_hits_compact_rows():
+    out = {"generated_at": "2026-11-27T18:05:00+07:00", "as_of": "2026-11-27", "phase": {"today": "A"},
+           "stocks": [{"ticker": "BBL", "patterns": [{"id": 7, "key": "FAILURE_RESET", "status": "PIVOT_RESET"}],
+                       "close": 187.0, "rs_rating": 78, "pivot": 204.0, "reset": {"type": "pivot", "old_pivot": 193.0}},
+                      {"ticker": "PRM", "patterns": [{"id": 3, "key": "CONFIRMING", "status": "BREAKOUT"}],
+                       "close": 9.8, "rs_rating": 87, "pivot": 9.55, "reset": None}]}
+    h = R.hits_from(out)
+    assert h["generated_at"] and h["as_of"] == "2026-11-27" and h["phase"] == "A"
+    assert h["fields"] == ["ticker", "patterns", "close", "rs_rating", "pivot", "old_pivot", "new_base_high"]
+    assert h["rows"][0] == ["BBL", [[7, "PIVOT_RESET"]], 187.0, 78, 204.0, 193.0, None]
+    assert h["rows"][1] == ["PRM", [[3, "BREAKOUT"]], 9.8, 87, 9.55, None, None]
+    assert R.hits_from({"generated_at": "x", "as_of": None, "phase": {}, "stocks": []})["rows"] == []
+
+
 if __name__ == "__main__":
     import tempfile
     fns = [v for k, v in dict(globals()).items() if k.startswith("test_") and callable(v)]

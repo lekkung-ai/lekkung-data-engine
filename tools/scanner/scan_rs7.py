@@ -41,6 +41,7 @@ from utils import (SECTOR_MAP_CANDIDATES, calculate_adtv, iter_stock_files,  # n
                    load_full_df, load_fund_tickers)
 
 OUT_FILE = RESULTS_DIR / "output" / "rs7.json"
+HITS_FILE = RESULTS_DIR / "output" / "rs7_hits.json"   # รายวัน (~1 KB) → data/history/<วัน>/ สำหรับ Report Card
 BKK = timezone(timedelta(hours=7))
 PATTERNS = {1: "PREDICTIVE", 2: "COINCIDENT", 3: "CONFIRMING", 4: "SORE_THUMB",
             5: "FAST_REBOUND", 6: "LEAD_REST", 7: "FAILURE_RESET"}
@@ -515,6 +516,21 @@ def _json_default(o):
     raise TypeError(f"not JSON serializable: {type(o).__name__}")
 
 
+HITS_FIELDS = ["ticker", "patterns", "close", "rs_rating", "pivot", "old_pivot", "new_base_high"]
+
+
+def hits_from(out: dict) -> dict:
+    """rs7_hits.json — รายชื่อวันนี้แบบย่อ: patterns = [[รูปแบบ, สถานะ], ...] · pivot = high 20 วันของวันนี้ ·
+    old_pivot / new_base_high = ของแบบ 7 (Pivot reset / Base reset) · ไม่เปลี่ยน rs7.json"""
+    rows = []
+    for r in out.get("stocks", []):
+        rs = r.get("reset") or {}
+        rows.append([r["ticker"], [[p["id"], p["status"]] for p in r["patterns"]], r.get("close"), r.get("rs_rating"),
+                     r.get("pivot"), rs.get("old_pivot"), rs.get("new_base_high")])
+    return {"generated_at": out.get("generated_at"), "as_of": out.get("as_of"),
+            "phase": (out.get("phase") or {}).get("today"), "fields": HITS_FIELDS, "rows": rows}
+
+
 def write_json(out: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
@@ -530,6 +546,7 @@ def main(argv=None) -> int:
     ap.add_argument("--rs-file", type=Path, default=RS_FILE)
     ap.add_argument("--stages-file", type=Path, default=PINE_STAGES_FILE)
     ap.add_argument("--out", type=Path, default=OUT_FILE)
+    ap.add_argument("--hits-out", type=Path, default=HITS_FILE)
     a = ap.parse_args(argv)
     print("📈 [RS-7] กำลังสแกน 7 รูปแบบหุ้นผู้นำ...")
     try:
@@ -542,10 +559,11 @@ def main(argv=None) -> int:
         print(f"  ⚠️ {w}")
     try:
         write_json(out, a.out)
+        write_json(hits_from(out), a.hits_out)
     except Exception as e:  # noqa: BLE001
         print(f"❌ [RS-7] เขียน {a.out} ไม่ได้: {e}")
         return 1
-    print(f"✅ [RS-7] {a.out} ({a.out.stat().st_size / 1024:.0f} KB)")
+    print(f"✅ [RS-7] {a.out} ({a.out.stat().st_size / 1024:.0f} KB) + {a.hits_out.name}")
     return 0
 
 
